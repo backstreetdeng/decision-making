@@ -86,6 +86,7 @@ async def analyze_sse(request: AnalyzeRequest):
         "stage1": "意图识别",
         "stage2": "数据检索",
         "stage3": "战略分析",
+        "stage4": "品牌分析",
         "stage5": "报告生成"
     }
 
@@ -279,6 +280,20 @@ def _generate_summary(stage: str, status: str, data) -> str:
                 if score:
                     parts.append(f"4P：{score}/10 ({level})")
             return " | ".join(parts) if parts else "分析完成"
+        return "完成"
+
+    elif stage == "stage4":
+        # 品牌分析
+        if inner and isinstance(inner, dict):
+            brand = inner.get("brand", "")
+            success = inner.get("success", False)
+            summary = inner.get("summary", "") or (inner.get("data", {}) or {}).get("summary", "")
+            if summary:
+                return summary
+            if brand:
+                return f"品牌 {brand} 分析完成"
+            if success:
+                return "品牌分析完成"
         return "完成"
 
     elif stage == "stage5":
