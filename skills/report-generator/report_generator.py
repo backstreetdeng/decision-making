@@ -235,7 +235,7 @@ def generate_report(
     question: str,
     intent_type: str,
     market_data: Dict[str, Any] = None,
-    branch_result: Dict[str, Any] = None,
+    brand_result: Dict[str, Any] = None,
     pest_result: Dict[str, Any] = None,
     porter_result: Dict[str, Any] = None,
     swot_result: Dict[str, Any] = None,
@@ -252,7 +252,7 @@ def generate_report(
         question: 用户原始问题
         intent_type: 意图类型
         market_data: 市场结构化数据
-        branch_result: 分支分析结果
+        brand_result: 品牌分析结果
         pest_result: PEST分析结果 (可能是 {"success": True, "data": {...}} 或直接是数据)
         porter_result: 波特五力结果 (可能是 {"success": True, "data": {...}} 或直接是数据)
         swot_result: SWOT分析结果 (可能是 {"success": True, "data": {...}} 或直接是数据)
@@ -282,10 +282,10 @@ def generate_report(
             "timestamp": timestamp
         },
         "executive_summary": _generate_executive_summary(
-            intent_type, branch_result, pest_data, porter_data
+            intent_type, brand_result, pest_data, porter_data
         ),
         "market_data": market_data,
-        "branch_analysis": branch_result,
+        "brand_analysis": brand_result,
         "pest_analysis": pest_data,
         "porter_analysis": porter_data,
         "swot_analysis": swot_data,
@@ -313,7 +313,7 @@ def generate_report(
 
 def _generate_executive_summary(
     intent_type: str,
-    branch_result: Dict[str, Any] = None,
+    brand_result: Dict[str, Any] = None,
     pest_result: Dict[str, Any] = None,
     porter_result: Dict[str, Any] = None
 ) -> Dict[str, Any]:
@@ -466,7 +466,7 @@ def skill_main(action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
             question=params.get("question", ""),
             intent_type=params.get("intent_type", "综合分析"),
             market_data=params.get("market_data"),
-            branch_result=params.get("branch_result"),
+            brand_result=params.get("brand_result"),
             pest_result=params.get("pest_result"),
             porter_result=params.get("porter_result"),
             swot_result=params.get("swot_result"),

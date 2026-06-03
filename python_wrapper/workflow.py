@@ -245,7 +245,8 @@ class MarketAnalysisWorkflow:
                     brand_result = await self.caller.brand_analysis(
                         brand=brand,
                         sql_data=sql_data,
-                        vector_data=vector_data
+                        vector_data=vector_data,
+                        question=question  # 传入原始问题用于品牌提取
                     )
                 except Exception as e:
                     self.stage_errors["stage4"] = str(e)

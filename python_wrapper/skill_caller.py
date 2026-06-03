@@ -158,17 +158,10 @@ class SkillCaller:
             {"brand": brand, "segment": segment, "sql_data": sql_data, "vector_data": vector_data}
         )
 
-    async def brand_analysis(self, brand: str, sql_data: Dict = None, vector_data: Dict = None) -> Dict[str, Any]:
+    async def brand_analysis(self, brand: str = None, sql_data: Dict = None, vector_data: Dict = None, question: str = None) -> Dict[str, Any]:
         """
         Brand analysis - analyzes brand market position and competitive advantages
         """
-        # 构建分析数据
-        analysis_data = {
-            "brand": brand,
-            "sql_data": sql_data,
-            "vector_data": vector_data
-        }
-
         # 调用 automotive-strategy-analysis skill
         # 使用 comprehensive 分析模式
         return await self.call(
@@ -177,7 +170,8 @@ class SkillCaller:
             {
                 "brand": brand,
                 "sql_data": sql_data,
-                "vector_data": vector_data
+                "vector_data": vector_data,
+                "question": question  # 用于从问题中提取品牌
             }
         )
 
