@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>市场战略分析 - 智能助手</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#0FC6C2',
+                        success: '#00B42A',
+                        warning: '#FF7D00',
+                        danger: '#F53F3F',
+                        dark: '#1D2129',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .btn-primary {
+            @apply bg-primary text-white px-6 py-3 rounded-lg font-medium hover:bg-primary/90 transition-all;
+        }
+        .btn-primary:disabled {
+            @apply bg-gray-300 cursor-not-allowed;
+        }
+
+        .input-field {
+            @apply w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all;
+        }
+
+        .step-item {
+            @apply flex items-center gap-3 p-4 rounded-lg transition-all duration-300;
+        }
+        .step-item.waiting {
+            @apply bg-gray-50 text-gray-500;
+        }
+        .step-item.active {
+            @apply bg-blue-50 text-primary border border-primary/30;
+        }
+        .step-item.done {
+            @apply bg-green-50 text-success;
+        }
+
+        .step-icon {
+            @apply w-10 h-10 rounded-full flex items-center justify-center font-semibold text-lg;
+        }
+        .step-item.waiting .step-icon {
+            @apply bg-gray-200 text-gray-500;
+        }
+        .step-item.active .step-icon {
+            @apply bg-primary text-white animate-pulse;
+        }
+        .step-item.done .step-icon {
+            @apply bg-success text-white;
+        }
+
+        .stage-card {
+            @apply bg-white rounded-xl border border-gray-200 overflow-hidden mb-4 shadow-sm;
+        }
+        .stage-card-header {
+            @apply px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between;
+        }
+        .stage-card-body {
+            @apply p-5;
+        }
+        .stage-card.running {
+            @apply border-primary/30;
+        }
+        .stage-card.running .stage-card-header {
+            @apply bg-blue-50/50;
+        }
+
+        .report-section {
+            @apply bg-white rounded-xl border border-gray-200 overflow-hidden mb-4 shadow-sm;
+        }
+        .report-section-header {
+            @apply px-5 py-4 bg-gradient-to-r from-primary to-secondary text-white;
+        }
+
+        .placeholder {
+            @apply text-center py-20 text-gray-400;
+        }
+        .placeholder-icon {
+            @apply text-6xl mb-4 opacity-50;
+        }
+
+        /* 打字机光标动画 */
+        .typing-cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1.2em;
+            background: #165DFF;
+            margin-left: 2px;
+            animation: blink 0.8s infinite;
+            vertical-align: middle;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* 流式输出文字容器 */
+        .streaming-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="max-w-6xl mx-auto p-6">
+        <!-- Header -->
+        <header class="mb-6">
+            <div class="flex items-center gap-3">
+                <div class="w-12 h-12 bg-primary rounded-xl flex items-center justify-center shadow-lg">
+                    <i class="fa fa-car text-white text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-800">市场战略分析</h1>
+                    <p class="text-sm text-gray-500">基于 AI 的汽车行业智能分析助手</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Input Section -->
+        <div class="bg-white rounded-xl p-5 mb-6 shadow-sm border border-gray-200">
+            <div class="flex gap-4">
+                <input type="text" id="question" placeholder="例如：分析比亚迪在20-30万纯电SUV市场的竞品"
+                       value="分析比亚迪的市场战略"
+                       class="input-field flex-1">
+                <button class="btn-primary" id="analyzeBtn" onclick="startAnalysis()">
+                    <i class="fa fa-play mr-2"></i>开始分析
+                </button>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="bg-white rounded-lg p-4 mb-6 shadow-sm border border-gray-200 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full flex items-center justify-center" id="statusIcon">
+                    <i class="fa fa-check-circle text-success"></i>
+                </div>
+                <span id="statusText" class="text-gray-600">准备就绪，请输入问题开始分析</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-400">进度</span>
+                <div class="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div id="progressBar" class="h-full bg-primary transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <span id="progressText" class="text-sm text-gray-500 w-12">0%</span>
+            </div>
+        </div>
+
+        <!-- Main Layout -->
+        <div class="grid grid-cols-4 gap-6">
+            <!-- Steps Panel -->
+            <div class="bg-white rounded-xl p-5 shadow-sm border border-gray-200">
+                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">分析流程</h3>
+
+                <div class="space-y-3">
+                    <div class="step-item waiting" id="step-stage1">
+                        <div class="step-icon">1</div>
+                        <div>
+                            <div class="font-medium">意图识别</div>
+                            <div class="text-xs opacity-70 step-status">等待中</div>
+                        </div>
+                    </div>
+
+                    <div class="step-item waiting" id="step-stage2">
+                        <div class="step-icon">2</div>
+                        <div>
+                            <div class="font-medium">数据检索</div>
+                            <div class="text-xs opacity-70 step-status">等待中</div>
+                        </div>
+                    </div>
+
+                    <div class="step-item waiting" id="step-stage3">
+                        <div class="step-icon">3</div>
+                        <div>
+                            <div class="font-medium">战略分析</div>
+                            <div class="text-xs opacity-70 step-status">等待中</div>
+                        </div>
+                    </div>
+
+                    <div class="step-item waiting" id="step-stage4">
+                        <div class="step-icon">4</div>
+                        <div>
+                            <div class="font-medium">品牌分析</div>
+                            <div class="text-xs opacity-70 step-status">等待中</div>
+                        </div>
+                    </div>
+
+                    <div class="step-item waiting" id="step-stage5">
+                        <div class="step-icon">5</div>
+                        <div>
+                            <div class="font-medium">报告生成</div>
+                            <div class="text-xs opacity-70 step-status">等待中</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Output Panel -->
+            <div class="col-span-3">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                        <span class="font-medium text-gray-700">实时分析结果</span>
+                        <span id="outputBadge" class="hidden px-3 py-1 bg-success/10 text-success text-sm rounded-full">
+                            <i class="fa fa-check mr-1"></i>已完成
+                        </span>
+                    </div>
+                    <div class="output-content" id="outputContent">
+                        <div class="placeholder">
+                            <div class="placeholder-icon">📊</div>
+                            <div class="text-lg mb-2">输入问题后，分析结果将实时显示在这里</div>
+                            <div class="text-sm">支持竞品分析、市场趋势、政策解读等</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let isAnalyzing = false;
+        let stageCards = {};
+        let reportContainer = null;
+        let streamingTextElement = null;
+        let streamingInterval = null;
+
+        const steps = {
+            'stage1': { name: '意图识别', index: 0, icon: '🎯' },
+            'stage2': { name: '数据检索', index: 1, icon: '🔍' },
+            'stage3': { name: '战略分析', index: 2, icon: '📈' },
+            'stage4': { name: '品牌分析', index: 3, icon: '🏢' },
+            'stage5': { name: '报告生成', index: 4, icon: '📝' }
+        };
+
+        function updateStatus(message, type = 'idle') {
+            const statusText = document.getElementById('statusText');
+            const statusIcon = document.getElementById('statusIcon');
+
+            statusText.textContent = message;
+
+            const iconClass = type === 'success' ? 'fa-check-circle text-success' :
+                              type === 'error' ? 'fa-times-circle text-danger' :
+                              type === 'analyzing' ? 'fa-spinner fa-spin text-warning' :
+                              'fa-check-circle text-success';
+
+            statusIcon.innerHTML = `<i class="fa ${iconClass}"></i>`;
+        }
+
+        function updateProgress(percent) {
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            progressBar.style.width = percent + '%';
+            progressText.textContent = Math.round(percent) + '%';
+        }
+
+        function updateStep(stepId, status) {
+            const stepEl = document.getElementById('step-' + stepId);
+            if (!stepEl) return;
+
+            stepEl.classList.remove('waiting', 'active', 'done');
+            stepEl.classList.add(status === 'running' ? 'active' : status === 'done' ? 'done' : 'waiting');
+
+            const statusEl = stepEl.querySelector('.step-status');
+            if (status === 'running') {
+                stepEl.querySelector('.step-icon').textContent = steps[stepId].index + 1;
+                statusEl.textContent = '分析中...';
+            } else if (status === 'done') {
+                stepEl.querySelector('.step-icon').innerHTML = '<i class="fa fa-check"></i>';
+                statusEl.textContent = '已完成';
+            } else {
+                stepEl.querySelector('.step-icon').textContent = steps[stepId].index + 1;
+                statusEl.textContent = '等待中';
+            }
+        }
+
+        function resetSteps() {
+            Object.keys(steps).forEach(stepId => {
+                const stepEl = document.getElementById('step-' + stepId);
+                if (stepEl) {
+                    stepEl.classList.remove('active', 'done');
+                    stepEl.classList.add('waiting');
+                    stepEl.querySelector('.step-icon').textContent = steps[stepId].index + 1;
+                    stepEl.querySelector('.step-status').textContent = '等待中';
+                }
+            });
+            stageCards = {};
+            updateProgress(0);
+
+            // 清除流式输出
+            if (streamingInterval) {
+                clearInterval(streamingInterval);
+                streamingInterval = null;
+            }
+        }
+
+        function showPlaceholder() {
+            const outputContent = document.getElementById('outputContent');
+            outputContent.innerHTML = `
+                <div class="placeholder">
+                    <div class="placeholder-icon">📊</div>
+                    <div class="text-lg mb-2">输入问题后，分析结果将实时显示在这里</div>
+                    <div class="text-sm">支持竞品分析、市场趋势、政策解读等</div>
+                </div>
+            `;
+        }
+
+        function createStageCard(stageId, stageName, status) {
+            const outputContent = document.getElementById('outputContent');
+
+            const placeholder = outputContent.querySelector('.placeholder');
+            if (placeholder) placeholder.remove();
+
+            const card = document.createElement('div');
+            card.className = `stage-card ${status}`;
+            card.id = `card-${stageId}`;
+
+            const icon = steps[stageId]?.icon || '📋';
+
+            card.innerHTML = `
+                <div class="stage-card-header">
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl">${icon}</span>
+                        <span class="font-semibold text-gray-800">${stageName}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full ${status === 'running' ? 'bg-primary animate-pulse' : 'bg-success'}"></div>
+                        <span class="text-sm ${status === 'running' ? 'text-primary' : 'text-success'}">
+                            ${status === 'running' ? '分析中...' : '已完成'}
+                        </span>
+                    </div>
+                </div>
+                <div class="stage-card-body">
+                    <div class="text-gray-600 streaming-text">${status === 'running' ? '正在分析，请稍候<span class="typing-cursor"></span>' : '处理完成'}</div>
+                </div>
+            `;
+
+            outputContent.appendChild(card);
+            stageCards[stageId] = card;
+            outputContent.scrollTop = outputContent.scrollHeight;
+            return card;
+        }
+
+        function updateStageCard(stageId, status, summary) {
+            let card = stageCards[stageId];
+
+            if (!card) {
+                card = createStageCard(stageId, steps[stageId]?.name || stageId, status);
+            } else {
+                card.className = `stage-card ${status}`;
+
+                const header = card.querySelector('.stage-card-header');
+                header.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl">${steps[stageId]?.icon || '📋'}</span>
+                        <span class="font-semibold text-gray-800">${steps[stageId]?.name || stageId}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full ${status === 'running' ? 'bg-primary animate-pulse' : 'bg-success'}"></div>
+                        <span class="text-sm ${status === 'running' ? 'text-primary' : 'text-success'}">
+                            ${status === 'running' ? '分析中...' : '已完成'}
+                        </span>
+                    </div>
+                `;
+            }
+
+            const body = card.querySelector('.stage-card-body');
+            if (summary) {
+                // 流式显示摘要
+                startStreaming(body, formatSummary(summary));
+            } else if (status === 'running') {
+                body.innerHTML = `<div class="text-gray-600">正在分析，请稍候<span class="typing-cursor"></span></div>`;
+            }
+
+            const stageIndex = steps[stageId]?.index || 0;
+            const progress = ((stageIndex + 1) / 5) * 100;
+            updateProgress(progress);
+
+            document.getElementById('outputContent').scrollTop = document.getElementById('outputContent').scrollHeight;
+        }
+
+        // 流式输出函数 - 模拟打字机效果
+        function startStreaming(container, text) {
+            if (streamingInterval) {
+                clearInterval(streamingInterval);
+            }
+
+            container.innerHTML = `<div class="streaming-text"></div><span class="typing-cursor"></span>`;
+            const textElement = container.querySelector('.streaming-text');
+            let index = 0;
+
+            streamingInterval = setInterval(() => {
+                if (index < text.length) {
+                    // 每次显示几个字符，模拟流式效果
+                    const chunkSize = Math.floor(Math.random() * 3) + 1;
+                    textElement.textContent = text.substring(0, index + chunkSize);
+                    index += chunkSize;
+
+                    // 滚动到底部
+                    const outputContent = document.getElementById('outputContent');
+                    outputContent.scrollTop = outputContent.scrollHeight;
+                } else {
+                    // 完成，移除光标
+                    const cursor = container.querySelector('.typing-cursor');
+                    if (cursor) cursor.remove();
+                    clearInterval(streamingInterval);
+                    streamingInterval = null;
+                }
+            }, 30); // 每30ms显示一点
+        }
+
+        function formatSummary(summary) {
+            if (!summary) return '';
+            let formatted = summary
+                .replace(/类型：([^|]+)/g, '<span class="text-primary font-medium">类型：$1</span>')
+                .replace(/置信度：([^|]+)/g, '<span class="text-secondary">置信度：$1</span>')
+                .replace(/向量检索：([^|]+)/g, '<span class="text-success">向量检索：$1</span>')
+                .replace(/SQL查询：([^|]+)/g, '<span class="text-success">SQL查询：$1</span>')
+                .replace(/PEST：([^|]+)/g, '<span class="text-warning">PEST：$1</span>')
+                .replace(/波特五力：([^|]+)/g, '<span class="text-warning">波特五力：$1</span>')
+                .replace(/SWOT：([^|]+)/g, '<span class="text-warning">SWOT：$1</span>')
+                .replace(/4P：([^|]+)/g, '<span class="text-warning">4P：$1</span>');
+            return formatted;
+        }
+
+        function parseMarkdown(md) {
+            if (!md) return '';
+
+            let html = md
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/^### (.+)$/gm, '<h3 class="text-lg font-semibold text-gray-800 mt-4 mb-2">$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2 class="text-xl font-bold text-gray-900 mt-6 mb-3 pb-2 border-b">$1</h2>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong class="text-gray-900">$1</strong>')
+                .replace(/^- (.+)$/gm, '<li class="ml-4 text-gray-700">$1</li>')
+                .replace(/^(\d+)\. (.+)$/gm, '<li class="ml-4 text-gray-700">$2</li>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+
+            return html;
+        }
+
+        // 创建报告容器（追加模式，不覆盖阶段卡片）
+        function createReportContainer() {
+            const outputContent = document.getElementById('outputContent');
+
+            const reportSection = document.createElement('div');
+            reportSection.className = 'report-section';
+            reportSection.id = 'reportSection';
+
+            reportSection.innerHTML = `
+                <div class="report-section-header">
+                    <h2 class="text-xl font-bold">📊 分析报告</h2>
+                    <p class="text-sm opacity-80 mt-1">实时生成中...</p>
+                </div>
+                <div class="p-5">
+                    <div class="streaming-text text-gray-700 leading-relaxed" id="reportText"></div>
+                </div>
+            `;
+
+            outputContent.appendChild(reportSection);
+            outputContent.scrollTop = outputContent.scrollHeight;
+
+            return document.getElementById('reportText');
+        }
+
+        // 流式显示报告
+        function streamReport(markdown) {
+            const reportText = createReportContainer();
+            const plainText = stripHtml(markdown);
+
+            let index = 0;
+            const speed = 15; // 速度调整，越小越快
+
+            streamingInterval = setInterval(() => {
+                if (index < plainText.length) {
+                    const chunkSize = Math.floor(Math.random() * 5) + 2;
+                    const currentText = plainText.substring(0, index + chunkSize);
+                    index += chunkSize;
+
+                    // 实时解析并渲染 Markdown
+                    reportText.innerHTML = parseMarkdown(currentText) + '<span class="typing-cursor"></span>';
+
+                    // 滚动到底部
+                    const outputContent = document.getElementById('outputContent');
+                    outputContent.scrollTop = outputContent.scrollHeight;
+                } else {
+                    // 完成
+                    reportText.innerHTML = parseMarkdown(markdown);
+                    document.getElementById('outputBadge').classList.remove('hidden');
+                    clearInterval(streamingInterval);
+                    streamingInterval = null;
+                }
+            }, speed);
+        }
+
+        // 去除 HTML 标签，只保留纯文本用于流式显示
+        function stripHtml(html) {
+            return html
+                .replace(/<[^>]*>/g, '')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>');
+        }
+
+        async function startAnalysis() {
+            if (isAnalyzing) return;
+
+            const question = document.getElementById('question').value.trim();
+            if (!question) {
+                updateStatus('请输入分析问题', 'error');
+                return;
+            }
+
+            isAnalyzing = true;
+            const btn = document.getElementById('analyzeBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>分析中...';
+
+            resetSteps();
+            showPlaceholder();
+            document.getElementById('outputBadge').classList.add('hidden');
+
+            updateStatus('正在连接分析服务...', 'analyzing');
+
+            try {
+                const response = await fetch(`${API_BASE}/analyze_sse`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question })
+                });
+
+                if (!response.ok) {
+                    throw new Error('请求失败: ' + response.status);
+                }
+
+                updateStatus('正在分析中...', 'analyzing');
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const separator = '\r\n\r\n';
+                    const eventBlocks = buffer.split(separator);
+                    buffer = eventBlocks.pop() || '';
+
+                    for (const block of eventBlocks) {
+                        if (!block.trim()) continue;
+
+                        let currentEvent = null;
+                        let dataContent = null;
+
+                        const lines = block.split('\r\n');
+
+                        for (const line of lines) {
+                            if (line.startsWith('event:')) {
+                                currentEvent = line.substring(6).trim();
+                            }
+                            if (line.startsWith('data:')) {
+                                dataContent = line.substring(5).trim();
+                            }
+                        }
+
+                        if (dataContent && currentEvent) {
+                            handleSSEMessage({ event: currentEvent, data: dataContent });
+                        }
+                    }
+                }
+
+                updateStatus('分析完成 ✓', 'success');
+
+            } catch (error) {
+                console.error('SSE Error:', error);
+                updateStatus('连接失败: ' + error.message, 'error');
+            } finally {
+                isAnalyzing = false;
+                const btn = document.getElementById('analyzeBtn');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa fa-play mr-2"></i>开始分析';
+            }
+        }
+
+        function handleSSEMessage(data) {
+            try {
+                let parsed = typeof data === 'string' ? JSON.parse(data) : data;
+                const eventType = parsed.event;
+                let payload = parsed.data;
+
+                if (typeof payload === 'string') {
+                    payload = JSON.parse(payload);
+                }
+
+                if (eventType === 'progress') {
+                    const stage = payload.stage;
+                    const status = payload.status;
+                    const summary = payload.summary || (payload.data?.summary) || '';
+                    const stageName = payload.stage_name || (steps[stage]?.name || stage);
+
+                    if (stage && steps[stage]) {
+                        updateStep(stage, status);
+                    }
+
+                    updateStageCard(stage, status, summary);
+
+                    if (status === 'running') {
+                        updateStatus(`正在${stageName}...`, 'analyzing');
+                    } else {
+                        updateStatus(`${stageName}完成 ✓`, 'analyzing');
+                    }
+
+                } else if (eventType === 'complete') {
+                    if (payload.success) {
+                        updateStatus('分析完成，耗时 ' + (payload.execution_time ? payload.execution_time.toFixed(1) : '?') + 's', 'success');
+                        if (payload.report) {
+                            // 流式显示报告（追加到现有内容后面）
+                            streamReport(payload.report);
+                        }
+                    } else {
+                        updateStatus('分析失败: ' + (payload.error || '未知错误'), 'error');
+                    }
+                } else if (eventType === 'error') {
+                    updateStatus('SSE错误: ' + (payload.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                console.error('Parse error:', e);
+            }
+        }
+
+        // 检查服务状态
+        window.onload = async function() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                if (response.ok) {
+                    updateStatus('服务已连接 ✓', 'success');
+                }
+            } catch (e) {
+                updateStatus('服务未连接，请确保后端已启动', 'error');
+            }
+        };
+    </script>
+</body>
+</html>
