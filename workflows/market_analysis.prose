@@ -1,72 +1,184 @@
 # 汽车市场战略决策智能体
-# OpenProse 标准语法 + Skills 集成版
+# OpenProse AI 编排层 - 动态决策工作流
+# 版本: v2.0 (基于215个AI智能体架构优化)
 
-# ======================
-# 1. 定义专业分析智能体
-# ======================
-# 注意：Skills 需要先通过 openclaw skills install 安装，或放在 workspace/skills/ 目录
+# ============================================
+# 核心设计原则
+# ============================================
+# 1. AI 动态编排 > 固定流程控制
+# 2. OpenProse 是大脑，不是脚本
+# 3. Skills 通过 OpenClaw Skill 系统调用
+# 4. 每个阶段结果影响后续决策
+
+# ============================================
+# 1. 定义分析 Agent
+# ============================================
+# 这个 Agent 封装了所有专业能力，通过 Skills 调用执行具体任务
 
 agent market_analyst:
   model: sonnet
   prompt: """
     你是15年经验的专业汽车市场战略分析师。
 
-    可用的 Skills（通过 skills 属性启用）：
-    - intent-classifier: 意图分类
-    - pg-vector-search: 向量知识库检索
-    - nl2sql-pg: 结构化数据库查询
-    - automotive-strategy-analysis: 战略分析(PEST/波特五力/SWOT/4P)
-    - report-generator: 报告生成
+    你的核心使命：
+    - 市场宏观分析（规模/增速/格局/趋势）
+    - 竞品格局研究（定位/策略/优劣势）
+    - 政策影响评估（补贴/限牌/双积分）
+    - 市场机会识别（机会点/风险/置信度）
 
-    当需要执行特定任务时，使用对应的 skill 工具。
+    可用的 Skills（通过 OpenClaw Skill 系统调用）：
+    - intent-classifier: 意图分类 → 理解用户真正想要什么
+    - pg-vector-search: 向量知识库检索 → 获取行业报告、政策文件等非结构化知识
+    - nl2sql-pg: 结构化数据库查询 → 获取销量、份额等结构化数据
+    - automotive-strategy-analysis: 战略分析框架 → PEST/波特五力/SWOT/4P
+    - report-generator: 报告生成 → 输出结构化分析报告
+
+    你的工作原则：
+    - 数据优先：下结论前先确认数据来源和可靠性
+    - 战略视角：从战略高度看问题，关注长期趋势
+    - 客观中立：公正呈现市场格局，不偏袒任何品牌
+    - 置信度评估：所有结论必须包含置信度评估
+
+    沟通风格：
+    - 数据驱动：「基于最近12个月的数据，该细分市场增速达45%」
+    - 结构化：「从规模、格局、趋势三个维度分析」
+    - 前瞻性：「预计2025年政策退坡将加速市场洗牌」
+    - 审慎性：「数据置信度中等，核心不确定性在于...」
   """
   skills: ["intent-classifier", "pg-vector-search", "nl2sql-pg", "automotive-strategy-analysis", "report-generator"]
 
-# ======================
+# ============================================
 # 2. 输入定义
-# ======================
+# ============================================
 input question: "用户的市场分析问题"
+input context: {
+  user_background: "用户背景信息（可选）",
+  time_range: "分析时间范围（默认最近12个月）",
+  known_info: "用户已知的信息（可选）",
+  analysis_requirements: "具体分析要求（可选）"
+}
 
-# ======================
-# 3. 阶段1：意图识别
-# ======================
-let intent_result = session: market_analyst
+# ============================================
+# 3. 阶段0：问题理解与计划（AI 动态决策）
+# ============================================
+# AI 在此阶段决定：需要调用哪些 Skills，按什么顺序
+
+let planning = session: market_analyst
   prompt: |
-    请使用 intent-classifier 工具识别用户问题的意图类型。
+    你是一个专业的汽车市场战略分析师。用户提出了一个问题，你需要：
+    1. 理解用户真正想要什么
+    2. 决定需要调用哪些 Skills
+    3. 制定分析计划
 
     用户问题：{question}
 
-    执行意图分类，获取：
-    - intent_type: 意图类型（趋势分析/竞品分析/机会识别等）
-    - confidence: 置信度
-    - brands_mentioned: 提到的品牌
-    - dimensions: 分析维度
+    **重要**：这是动态决策，不是固定流程。
+    根据问题类型，你可能需要：
+    - 只调用部分 Skills（简单问题不需要完整分析）
+    - 调整 Skills 调用顺序（有些问题先分析再检索更有效）
+    - 添加额外的分析维度（问题可能涉及多个方面）
 
-# ======================
-# 4. 阶段2：数据检索
-# ======================
-let vector_data = session: market_analyst
-  prompt: |
-    请使用 pg-vector-search 工具检索向量知识库。
+    请输出：
+    ```json
+    {
+      "intent_type": "趋势分析/竞品分析/机会识别/政策评估/综合分析",
+      "intent_confidence": 0.85,
+      "brands_mentioned": ["比亚迪", "特斯拉"],
+      "dimensions": ["规模", "格局", "趋势"],
+      "skills_to_call": ["intent-classifier", "pg-vector-search", "nl2sql-pg"],
+      "skill_order": ["intent-classifier", "nl2sql-pg", "pg-vector-search"],
+      "analysis_plan": "先获取销量数据，再检索行业报告进行对比分析",
+      "estimated_confidence": 0.8,
+      "main_uncertainty": "新玩家入场速度"
+    }
+    ```
 
-    用户问题：{question}
+# ============================================
+# 4. 阶段1：意图识别（可选，AI 判断是否需要）
+# ============================================
+# AI 动态决定是否需要此阶段
 
-    执行向量检索，获取相关市场数据、行业报告、政策文件等。
+if planning.skills_to_call contains "intent-classifier":
+  let intent_result = session: market_analyst
+    prompt: |
+      使用 intent-classifier skill 识别用户问题的意图类型。
 
-let sql_data = session: market_analyst
-  prompt: |
-    请使用 nl2sql-pg 工具执行结构化数据查询。
+      用户问题：{question}
 
-    用户问题：{question}
+      执行意图分类，获取：
+      - intent_type: 意图类型（趋势分析/竞品分析/机会识别等）
+      - confidence: 置信度
+      - brands_mentioned: 提到的品牌
+      - dimensions: 分析维度
+      - suggested_skills: 建议调用的其他 Skills
 
-    执行SQL查询，获取销量数据、市场份额、趋势数据等结构化信息。
+      **注意**：如果 planning 阶段已明确意图，此步骤可简化执行。
+else:
+  let intent_result = {
+    intent_type: planning.intent_type,
+    confidence: planning.intent_confidence,
+    brands_mentioned: planning.brands_mentioned,
+    dimensions: planning.dimensions
+  }
 
-# ======================
-# 5. 阶段3：战略分析
-# ======================
+# ============================================
+# 5. 阶段2：数据检索（并行执行，AI 动态决定）
+# ============================================
+# 根据 planning 阶段的决策，动态决定调用哪些检索 Skills
+
+# 5.1 结构化数据查询（销量、份额等）
+if planning.skills_to_call contains "nl2sql-pg":
+  let sql_data = session: market_analyst
+    prompt: |
+      使用 nl2sql-pg skill 执行结构化数据查询。
+
+      用户问题：{question}
+      意图类型：{intent_result.intent_type}
+
+      根据问题类型，执行相应的 SQL 查询：
+      - 趋势分析 → 查询销量趋势、同环比数据
+      - 竞品分析 → 查询品牌/车型销量、份额数据
+      - 机会识别 → 查询细分市场分布、增长数据
+
+      输出结构化数据，包含：
+      - 数据来源
+      - 时间范围
+      - 具体数值
+      - 置信度评估
+else:
+  let sql_data = null
+
+# 5.2 非结构化知识检索（行业报告、政策文件等）
+if planning.skills_to_call contains "pg-vector-search":
+  let vector_data = session: market_analyst
+    prompt: |
+      使用 pg-vector-search skill 检索向量知识库。
+
+      用户问题：{question}
+      意图类型：{intent_result.intent_type}
+
+      执行向量检索，获取：
+      - 相关市场数据
+      - 行业报告摘要
+      - 政策文件内容
+      - 历史分析案例
+
+      **注意**：根据问题类型调整检索策略：
+      - 政策评估 → 优先检索政策文件
+      - 竞品分析 → 优先检索竞品分析报告
+      - 趋势分析 → 优先检索行业研究报告
+else:
+  let vector_data = null
+
+# ============================================
+# 6. 阶段3：战略分析（AI 动态决定分析维度）
+# ============================================
+# 根据意图类型和数据情况，动态选择分析框架
+
+# 6.1 PEST 宏观环境分析（通常需要）
 let pest_data = session: market_analyst
   prompt: |
-    请使用 automotive-strategy-analysis 工具执行PEST宏观环境分析。
+    使用 automotive-strategy-analysis skill 执行 PEST 宏观环境分析。
 
     分析汽车行业的：
     - Political（政治）：新能源政策、补贴、双积分
@@ -74,62 +186,239 @@ let pest_data = session: market_analyst
     - Social（社会）：环保、充电基础设施、用户偏好
     - Technological（技术）：电池、智能驾驶、平台化
 
+    结合已检索的数据：
+    - 结构化数据：{sql_data}
+    - 非结构化知识：{vector_data}
+
+    **注意**：根据问题类型调整分析重点：
+    - 政策评估 → 重点分析 Political 维度
+    - 市场趋势 → 重点分析 Economic 和 Social 维度
+    - 技术路线 → 重点分析 Technological 维度
+
+# 6.2 波特五力竞争分析
 let porter_data = session: market_analyst
   prompt: |
-    请使用 automotive-strategy-analysis 工具执行波特五力竞争分析。
+    使用 automotive-strategy-analysis skill 执行波特五力竞争分析。
 
     分析：
-    - 现有竞争者
-    - 潜在进入者
-    - 替代品威胁
-    - 供应商议价
-    - 购买者议价
+    - 现有竞争者：市场格局、集中度、价格战
+    - 潜在进入者：新玩家、跨界竞争
+    - 替代品威胁：燃油车、其他出行方式
+    - 供应商议价：电池、芯片供应格局
+    - 购买者议价：消费者议价能力变化
 
-# 品牌分析（条件执行）
-if intent_result.brands_mentioned:
+    结合已检索的数据：
+    - 结构化数据：{sql_data}
+    - 非结构化知识：{vector_data}
+
+# 6.3 品牌特定分析（仅当问题涉及特定品牌时）
+if intent_result.brands_mentioned.length > 0:
   let brand = intent_result.brands_mentioned.[0]
 
   let swot_data = session: market_analyst
     prompt: |
-      请使用 automotive-strategy-analysis 工具执行SWOT战略分析。
+      使用 automotive-strategy-analysis skill 执行 SWOT 战略分析。
 
       品牌：{brand}
 
-      分析优势、劣势、机会、威胁。
+      分析：
+      - S (Strengths) 优势：技术、品牌、渠道、成本
+      - W (Weaknesses) 劣势：短板、问题、挑战
+      - O (Opportunities) 机会：市场、政策、技术机会
+      - T (Threats) 威胁：竞争、风险、不确定性
 
   let fourp_data = session: market_analyst
     prompt: |
-      请使用 automotive-strategy-analysis 工具执行4P营销分析。
+      使用 automotive-strategy-analysis skill 执行 4P 营销分析。
 
       品牌：{brand}
 
-      分析产品、价格、渠道、促销策略。
+      分析：
+      - Product（产品）：产品线、配置、定位
+      - Price（价格）：价格体系、促销策略
+      - Place（渠道）：销售网络、渠道策略
+      - Promotion（促销）：营销活动、传播策略
+
 else:
   let swot_data = null
   let fourp_data = null
 
-# ======================
-# 6. 阶段4：报告生成
-# ======================
+# ============================================
+# 7. 阶段4：机会与风险识别（AI 动态洞察）
+# ============================================
+let opportunity_risk = session: market_analyst
+  prompt: |
+    基于以上所有分析，识别市场机会和风险。
+
+    输入数据：
+    - 意图类型：{intent_result.intent_type}
+    - 结构化数据：{sql_data}
+    - 非结构化知识：{vector_data}
+    - PEST分析：{pest_data}
+    - 波特五力：{porter_data}
+    - SWOT分析：{swot_data}
+    - 4P分析：{fourp_data}
+
+    **重要**：这是 AI 洞察的关键阶段，不是简单的数据汇总。
+
+    请识别：
+    1. **机会点**（每个机会包含）：
+       - 机会描述
+       - 规模估算
+       - 增速评估
+       - 竞争强度
+       - 置信度
+
+    2. **风险提示**（每个风险包含）：
+       - 风险描述
+       - 概率评估
+       - 影响程度
+       - 应对建议
+
+    3. **置信度评估**：
+       - 数据可靠性：高/中/低
+       - 预测置信度：具体百分比
+       - 主要不确定性
+
+# ============================================
+# 8. 阶段5：报告生成（结构化输出）
+# ============================================
 output analysis_report = session: market_analyst
   prompt: |
-    请使用 report-generator 工具生成完整的市场战略分析报告。
+    使用 report-generator skill 生成完整的市场战略分析报告。
 
     用户问题：{question}
     意图类型：{intent_result.intent_type}
-    向量数据：{vector_data}
-    SQL数据：{sql_data}
-    PEST分析：{pest_data}
-    波特五力：{porter_data}
-    SWOT分析：{swot_data}
-    4P分析：{fourp_data}
 
-    生成包含以下部分的Markdown报告：
-    1. 执行摘要
-    2. 市场现状与数据
-    3. PEST宏观分析
-    4. 竞争格局（波特五力）
-    5. SWOT战略研判
-    6. 4P营销分析
-    7. 市场机会与风险
-    8. 战略建议
+    分析数据汇总：
+    - 结构化数据：{sql_data}
+    - 非结构化知识：{vector_data}
+    - PEST分析：{pest_data}
+    - 波特五力：{porter_data}
+    - SWOT分析：{swot_data}
+    - 4P分析：{fourp_data}
+    - 机会与风险：{opportunity_risk}
+
+    生成 Markdown 格式报告，结构如下：
+
+    ```markdown
+    # 市场战略分析报告
+
+    ## 执行摘要
+    - 核心结论（3条以内）
+    - 置信度评估
+
+    ## 市场现状与数据
+    ### 规模指标
+    ### 竞争格局
+    ### 趋势变化
+
+    ## PEST宏观分析
+    ### Political 政治
+    ### Economic 经济
+    ### Social 社会
+    ### Technological 技术
+
+    ## 竞争格局（波特五力）
+    ### 现有竞争者
+    ### 潜在进入者
+    ### 替代品威胁
+    ### 供应商议价
+    ### 购买者议价
+
+    ## 战略研判（SWOT）
+    ### 优势
+    ### 劣势
+    ### 机会
+    ### 威胁
+
+    ## 营销分析（4P）
+    ### 产品
+    ### 价格
+    ### 渠道
+    ### 促销
+
+    ## 市场机会与风险
+    ### 机会点
+    ### 风险提示
+
+    ## 战略建议
+    ### 建议一
+    ### 建议二
+    ### 下一步行动
+
+    ## 置信度与不确定性
+    - 数据可靠性
+    - 预测置信度
+    - 主要不确定性
+    - 下一步验证建议
+    ```
+
+# ============================================
+# 9. 错误处理与回退机制
+# ============================================
+# 如果某个阶段失败，AI 动态决定如何处理
+
+on error:
+  # 记录错误到 memory/YYYY-MM-DD.md
+  log_error(error, stage)
+
+  # AI 决策：继续、降级执行或终止
+  let recovery_action = session: market_analyst
+    prompt: |
+      发生了错误：{error}
+
+      错误发生在哪个阶段：{current_stage}
+
+      请决策：
+      1. **继续**：错误不影响后续分析，可以继续
+      2. **降级**：数据缺失，使用定性分析补充
+      3. **终止**：错误太严重，无法给出有效结论
+
+      请给出：
+      - 决策：continue/degrade/terminate
+      - 理由
+      - 置信度调整
+
+# ============================================
+# 10. 质量门禁
+# ============================================
+# 基于 agents-orchestrator 模式的质量控制
+
+let quality_check = session: market_analyst
+  prompt: |
+    检查分析报告的质量。
+
+    报告：{analysis_report}
+
+    质量检查项：
+    1. 数据溯源：所有结论是否有数据支撑？
+    2. 结构完整：是否包含所有必要章节？
+    3. 置信度评估：是否包含置信度说明？
+    4. 风险提示：是否包含风险预警？
+    5. 可执行性：建议是否具体可执行？
+
+    输出：
+    - quality_score: 0-100
+    - issues: 问题列表
+    - suggestions: 改进建议
+
+# 如果质量不达标，AI 决定是否重试
+if quality_check.quality_score < 70:
+  # 重试逻辑：最多3次
+  retry_analysis(max_attempts: 3, feedback: quality_check.suggestions)
+
+# ============================================
+# 完成
+# ============================================
+return {
+  report: analysis_report,
+  quality: quality_check,
+  metadata: {
+    intent: intent_result.intent_type,
+    confidence: quality_check.quality_score,
+    brands: intent_result.brands_mentioned,
+    skills_used: planning.skills_to_call,
+    timestamp: current_timestamp()
+  }
+}
