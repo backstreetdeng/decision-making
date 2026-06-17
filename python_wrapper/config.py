@@ -15,6 +15,10 @@ SKILLS_DIR = Path(r"C:\Users\11489\.openclaw\workspace-market\skills")
 # RAG Engine 路径
 RAG_ENGINE_PATH = r"E:\AI\data\envs\car_agent_env\ai-decision\rag-engine"
 
+# Canonical Python runtime for all market/RAG tools. Do not use system Python for
+# these tools; the RAG stack depends on packages installed in this venv.
+CAR_AGENT_PYTHON = r"E:\AI\data\envs\car_agent_env\Scripts\python.exe"
+
 # 数据库配置
 DB_CONFIG = {
     "host": os.environ.get("DB_HOST", "192.168.3.146"),

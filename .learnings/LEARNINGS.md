@@ -6,6 +6,25 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ---
 
+## [LRN-20260616-003] correction
+**Logged**: 2026-06-16T17:20:00+08:00
+**Priority**: high
+**Status**: pending
+
+### Summary
+不能把 Agent 编排能力降级成固定 Python pipeline。
+
+### Details
+用户指出：如果工作流仍由 Python 一步一步串行执行，就无法体现 AI Agent 的自主决策、任务拆解、分析、行动、反思和循环执行。`workflow_ai_orchestrator.py` 当前仍有硬编码阶段逻辑，只是过渡方案，不应被当作最终架构。
+
+### Suggested Action
+- `market_analysis.prose` 和 `strategy-orchestrator` 应成为编排核心。
+- Python 只做 adapter / tool bridge / SSE event relay。
+- 决策循环应由 Agent 执行：Plan -> Act -> Observe -> Reflect -> Re-plan。
+- 后续改造时优先移除 `workflow_ai_orchestrator.py` 中的硬编码阶段控制。
+
+---
+
 ## [LRN-20260602-001] best_practice
 
 **Logged**: 2026-06-02T23:14:00+08:00

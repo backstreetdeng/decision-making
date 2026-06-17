@@ -1,31 +1,34 @@
 """
-Python Wrapper - 市场分析工作流封装
+Python Wrapper - market strategy adapters.
 
-使用方式:
-    from python_wrapper import run_market_analysis
+Current role:
+- expose legacy/transition execution adapters for compatibility paths
+- expose local Skill bridge utilities
+- keep FastAPI/SSE and upload services as auxiliary APIs
 
-    result = await run_market_analysis("分析比亚迪的市场战略")
+Boundary:
+- python_wrapper is not the complex market-analysis orchestration brain.
+- Complex task decisions belong to strategy-orchestrator.
+- This package should stay as adapter, event bridge, upload service, and legacy API surface.
 """
 
-from workflow import MarketAnalysisWorkflow, run_market_analysis, WorkflowResult
-from stage_connectors import (
-    build_stage2_input, build_stage3_input, build_report_input,
-    Stage2Input, Stage3Input, ReportInput
+from .workflow_ai_orchestrator import (
+    OpenProseWorkflowOrchestrator,
+    WorkflowContext,
+    WorkflowEvent,
+    StageStatus,
+    run_market_analysis_ai,
 )
-from skill_caller import SkillCaller, get_caller
+from .skill_caller import SkillCaller, get_caller
 
 __all__ = [
-    "MarketAnalysisWorkflow",
-    "run_market_analysis",
-    "WorkflowResult",
-    "build_stage2_input",
-    "build_stage3_input",
-    "build_report_input",
-    "Stage2Input",
-    "Stage3Input",
-    "ReportInput",
+    "OpenProseWorkflowOrchestrator",
+    "WorkflowContext",
+    "WorkflowEvent",
+    "StageStatus",
+    "run_market_analysis_ai",
     "SkillCaller",
-    "get_caller"
+    "get_caller",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

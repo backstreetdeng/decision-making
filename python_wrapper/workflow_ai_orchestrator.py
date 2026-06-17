@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-OpenProse Workflow AI Orchestrator
-OpenProse Workflow 的执行器 - AI 动态编排层
+Legacy OpenProse Workflow Adapter
+过渡期兼容执行器 - 不是复杂市场分析的业务调度大脑
 
 核心职责：
-1. 解析 OpenProse Workflow 定义
+1. 为旧 API / 前端演示路径保留可运行入口
 2. 通过 OpenClaw Skill 系统调用 Skills
-3. 根据中间结果动态调整后续步骤
-4. 管理质量门禁和重试逻辑
+3. 将阶段进度转换为 SSE 可展示事件
+4. 作为迁移期 adapter，兼容旧的 run_market_analysis_ai() 调用
 
-注意：这是 AI 编排层，不是流程控制脚本
+注意：
+- 新架构下，复杂任务自主编排主责属于 strategy-orchestrator。
+- 本文件仍包含硬编码阶段逻辑，因此只能视为 legacy adapter / transition executor。
+- 后续应逐步把业务决策迁移到持久化 Agent 编排层。
 """
 
 import asyncio
@@ -27,6 +30,7 @@ class StageStatus(Enum):
     DONE = "done"
     FAILED = "failed"
     SKIPPED = "skipped"
+    WARNING = "warning"
 
 
 @dataclass
@@ -50,7 +54,7 @@ class WorkflowEvent:
 
 @dataclass
 class WorkflowContext:
-    """工作流执行上下文 - AI 动态决策用"""
+    """兼容执行上下文 - 供过渡期 adapter 汇总阶段结果"""
     question: str
     context: Dict[str, Any]
 
@@ -85,13 +89,13 @@ class WorkflowContext:
 
 class OpenProseWorkflowOrchestrator:
     """
-    OpenProse Workflow AI 编排器
+    OpenProse Workflow 兼容适配器
 
-    核心设计原则：
-    1. OpenProse Workflow 是 AI 编排层，定义的是"意图"而非"步骤"
-    2. 这个 Orchestrator 执行 Workflow，并根据中间结果动态决策
-    3. Skills 通过 OpenClaw Skill 系统调用
-    4. SSE 仅用于流式展示，不控制任何流程
+    迁移期边界：
+    1. 本类为旧 API / 前端演示保留兼容入口。
+    2. Skills 通过 OpenClaw Skill 系统调用。
+    3. SSE 仅用于流式展示，不控制任何流程。
+    4. 复杂市场分析的最终调度大脑是 strategy-orchestrator。
     """
 
     def __init__(self, workflow_path: str = None):
@@ -102,7 +106,10 @@ class OpenProseWorkflowOrchestrator:
     async def initialize(self):
         """初始化 Orchestrator"""
         # 加载 OpenProse Skill 调用器
-        from skill_caller import get_caller
+        try:
+            from .skill_caller import get_caller
+        except ImportError:
+            from skill_caller import get_caller
         self.skill_caller = get_caller()
 
     async def run(
@@ -112,13 +119,14 @@ class OpenProseWorkflowOrchestrator:
         progress_callback: Callable[[str, str, Dict], None] = None
     ) -> Dict[str, Any]:
         """
-        执行 OpenProse Workflow
+        执行旧兼容分析链路
 
-        这是 AI 动态编排的核心入口：
-        1. 解析 Workflow 定义
-        2. AI 决策阶段顺序和内容
-        3. 调用 Skills 执行任务
-        4. 根据结果动态调整后续步骤
+        这是 legacy adapter 的兼容入口：
+        1. 保留旧阶段事件，供 SSE / API 演示使用。
+        2. 调用 Skills 执行任务。
+        3. 返回旧接口期望的报告结构。
+
+        不要把这里当作 v3.0 的复杂任务自主编排入口。
         """
         start_time = time.time()
         self.context = WorkflowContext(question=question, context=context or {})
@@ -136,7 +144,7 @@ class OpenProseWorkflowOrchestrator:
 
         try:
             # ============================================
-            # 阶段0：问题理解与计划（AI 动态决策）
+            # 阶段0：问题理解与计划（兼容路径的简化规划）
             # ============================================
             await emit("planning", "running", "AI 正在分析问题...")
             planning_result = await self._execute_planning()
@@ -247,11 +255,12 @@ class OpenProseWorkflowOrchestrator:
     async def _execute_planning(self) -> Dict[str, Any]:
         """
         阶段0：问题理解与计划
-        AI 动态决定：需要调用哪些 Skills，按什么顺序
+        兼容路径使用简单规则决定需要调用哪些 Skills。
+
+        新架构下，这类决策应由 strategy-orchestrator 基于三层输入和证据反馈完成。
         """
         try:
-            # 这里应该调用 AI 模型进行动态规划
-            # 当前实现使用简单的规则，未来可以接入更强的 AI 模型
+            # 旧兼容实现使用简单规则；不要继续扩展为业务调度大脑。
             question = self.context.question
 
             # 简单的意图推断
@@ -514,7 +523,7 @@ async def run_market_analysis_ai(
     context: Dict[str, Any] = None,
     progress_callback: Callable = None
 ) -> Dict[str, Any]:
-    """运行 AI 编排的市场分析工作流"""
+    """运行旧兼容市场分析链路。复杂任务主线应交给 strategy-orchestrator。"""
     orchestrator = OpenProseWorkflowOrchestrator()
     await orchestrator.initialize()
     return await orchestrator.run(question, context, progress_callback)
@@ -524,7 +533,7 @@ async def run_market_analysis_ai(
 if __name__ == "__main__":
     async def test():
         print("=" * 60)
-        print("OpenProse Workflow AI Orchestrator Test")
+        print("Legacy OpenProse Workflow Adapter Test")
         print("=" * 60)
 
         def progress(stage, status, data):

@@ -4,8 +4,8 @@ FastAPI + SSE 服务 - 纯展示层
 
 设计原则：
 1. SSE 仅负责流式展示，不控制任何流程
-2. 流程控制由 OpenProse Workflow Orchestrator 负责
-3. 这是一个纯粹的"观众席"，接收并展示 Workflow 的事件
+2. 如果走旧 API 路径，事件来自 workflow_ai_orchestrator.py 兼容适配器
+3. 复杂市场分析主线由 strategy-orchestrator 负责自主编排
 
 架构层次：
 ┌─────────────────────────────────────────────────────────┐
@@ -14,9 +14,9 @@ FastAPI + SSE 服务 - 纯展示层
 └─────────────────────────────────────────────────────────┘
                            ↓ 接收事件
 ┌─────────────────────────────────────────────────────────┐
-│            OpenProse Workflow Orchestrator                │
-│                   AI 动态编排层                          │
-│              (workflow_ai_orchestrator.py)               │
+│              Legacy Workflow Adapter                      │
+│        旧 API / 前端演示兼容路径，不是业务大脑              │
+│              (workflow_ai_orchestrator.py)                │
 └─────────────────────────────────────────────────────────┘
                            ↓ 调用 Skills
 ┌─────────────────────────────────────────────────────────┐
@@ -45,13 +45,13 @@ app = FastAPI(
 
 架构层次：
 1. **SSE Server** - 纯展示层，接收并流式输出 Workflow 事件
-2. **Workflow Orchestrator** - AI 动态编排层（workflow_ai_orchestrator.py）
+2. **Legacy Workflow Adapter** - 旧 API / 前端演示兼容路径（workflow_ai_orchestrator.py）
 3. **Skill Caller** - OpenClaw Skill 系统调用（skill_caller.py）
 4. **Skills** - 专业能力单元（skills/）
 
-工作流定义：
-- OpenProse Workflow: workflows/market_analysis.prose
-- 负责 AI 动态编排和决策
+复杂市场分析主线：
+- 由 `market_strategy_agent` 转交 `strategy-orchestrator`
+- `workflows/market_analysis.prose` 是方法论和质量契约，不是流程控制器
     """
 )
 
@@ -79,8 +79,9 @@ async def root():
         "version": "2.0.0",
         "architecture": {
             "layer": "SSE 展示层",
-            "orchestrator": "workflow_ai_orchestrator.py",
-            "description": "SSE 仅负责流式展示，不控制流程"
+            "legacy_adapter": "workflow_ai_orchestrator.py",
+            "main_orchestrator": "strategy-orchestrator",
+            "description": "SSE 仅负责流式展示；复杂任务主线由 strategy-orchestrator 编排"
         },
         "endpoints": {
             "analyze": "/analyze",
@@ -113,7 +114,10 @@ async def analyze(request: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="question 参数不能为空")
 
     # 动态导入，避免循环依赖
-    from workflow_ai_orchestrator import run_market_analysis_ai
+    try:
+        from .workflow_ai_orchestrator import run_market_analysis_ai
+    except ImportError:
+        from workflow_ai_orchestrator import run_market_analysis_ai
 
     result = await run_market_analysis_ai(
         question=request.question,
@@ -135,7 +139,7 @@ async def analyze_sse(request: AnalyzeRequest):
     设计原则：
     1. SSE 仅接收并转发 Workflow 的事件
     2. 不控制任何流程逻辑
-    3. 流程控制由 Workflow Orchestrator 负责
+    3. 当前旧 API 路径由 workflow_ai_orchestrator.py 兼容适配器产出事件
 
     SSE 事件类型：
     - progress: 阶段进度事件
@@ -193,7 +197,10 @@ async def analyze_sse(request: AnalyzeRequest):
         - 不控制任何流程
         """
         # 动态导入，避免循环依赖
-        from workflow_ai_orchestrator import run_market_analysis_ai
+        try:
+            from .workflow_ai_orchestrator import run_market_analysis_ai
+        except ImportError:
+            from workflow_ai_orchestrator import run_market_analysis_ai
 
         # 启动 Workflow 任务
         workflow_task = asyncio.create_task(
@@ -444,7 +451,10 @@ async def intent_preview(question: str):
         raise HTTPException(status_code=400, detail="question 参数不能为空")
 
     # 使用 Workflow Orchestrator 的 planning 能力
-    from workflow_ai_orchestrator import OpenProseWorkflowOrchestrator
+    try:
+        from .workflow_ai_orchestrator import OpenProseWorkflowOrchestrator
+    except ImportError:
+        from workflow_ai_orchestrator import OpenProseWorkflowOrchestrator
 
     orchestrator = OpenProseWorkflowOrchestrator()
     await orchestrator.initialize()
@@ -471,13 +481,14 @@ async def workflow_status():
     """
     获取 Workflow 状态
 
-    查看当前 AI 编排层的状态
+    查看当前展示层和旧兼容适配器状态
     """
     return {
         "layer": "SSE 展示层",
-        "orchestrator_layer": "OpenProse Workflow Orchestrator",
+        "legacy_adapter": "workflow_ai_orchestrator.py",
+        "main_orchestrator": "strategy-orchestrator",
         "status": "ready",
-        "description": "SSE 仅负责流式展示，流程控制由 Orchestrator 负责"
+        "description": "SSE 仅负责流式展示；复杂任务主线由 strategy-orchestrator 编排"
     }
 
 
@@ -490,7 +501,8 @@ if __name__ == "__main__":
     print("市场战略分析 API - SSE 展示层")
     print("=" * 60)
     print("架构：SSE 纯展示层")
-    print("编排：OpenProse Workflow Orchestrator")
+    print("旧兼容适配器：workflow_ai_orchestrator.py")
+    print("复杂任务主线：strategy-orchestrator")
     print("=" * 60)
 
     uvicorn.run(
