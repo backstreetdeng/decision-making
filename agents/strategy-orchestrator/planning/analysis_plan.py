@@ -1,0 +1,167 @@
+# -*- coding: utf-8 -*-
+"""Analysis plan for strategy-orchestrator.
+
+P1 goal: one task-level plan must drive SQL, RAG, Tavily, frameworks, and
+reporting. This prevents each tool from inventing its own brand, time range,
+or market scope.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+
+
+BRAND_ALIASES: Dict[str, List[str]] = {
+    "小米": ["小米", "小米汽车", "SU7", "YU7"],
+    "比亚迪": ["比亚迪", "BYD", "方程豹", "腾势", "仰望"],
+    "特斯拉": ["特斯拉", "Tesla", "Model 3", "Model Y"],
+    "理想": ["理想", "理想汽车", "L6", "L7", "L8", "L9", "MEGA"],
+    "问界": ["问界", "鸿蒙智行", "AITO", "M5", "M7", "M9"],
+    "蔚来": ["蔚来", "NIO", "乐道"],
+    "小鹏": ["小鹏", "XPeng"],
+    "吉利": ["吉利", "银河", "极氪", "领克"],
+    "长安": ["长安", "深蓝", "阿维塔"],
+    "零跑": ["零跑"],
+    "极氪": ["极氪"],
+}
+
+
+@dataclass
+class AnalysisPlan:
+    raw_query: str
+    target_brand: Optional[str]
+    brand_aliases: List[str]
+    time_range: str
+    market_scope: str
+    geography: str = "中国"
+    price_band: Optional[str] = None
+    power_type: Optional[str] = None
+    assumptions: List[str] = field(default_factory=list)
+    required_data_fields: List[str] = field(default_factory=list)
+    rag_query: str = ""
+    tavily_query: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def build_analysis_plan(task: Any) -> AnalysisPlan:
+    intent = getattr(task, "user_intent", None)
+    raw_query = getattr(intent, "raw_query", "") or ""
+    requested_time = getattr(intent, "time_range", "") or ""
+    entities = list(getattr(intent, "entities", []) or [])
+
+    brand = _infer_brand(raw_query, entities)
+    time_range = _normalize_time_range(raw_query, requested_time)
+    market_scope = _infer_market_scope(raw_query)
+    price_band = _infer_price_band(raw_query)
+    power_type = _infer_power_type(raw_query)
+    aliases = _brand_aliases(brand)
+
+    required_fields = [
+        "总体市场规模/TAM",
+        "目标细分市场/SAM",
+        "目标品牌或车型/SOM",
+        "月度趋势与环比",
+        "同比变化",
+        "车型贡献",
+        "价格带",
+        "动力类型",
+        "竞品份额",
+        "RAG业务文档证据",
+        "Tavily外部实时证据",
+    ]
+    assumptions = [
+        "若用户未显式指定地域，默认以中国乘用车市场为核心范围。",
+        "品牌、时间、市场范围必须贯穿 SQL/RAG/Tavily/分析框架。",
+        "证据不足时只能输出低置信度判断或待补证假设。",
+    ]
+
+    return AnalysisPlan(
+        raw_query=raw_query,
+        target_brand=brand,
+        brand_aliases=aliases,
+        time_range=time_range,
+        market_scope=market_scope,
+        price_band=price_band,
+        power_type=power_type,
+        assumptions=assumptions,
+        required_data_fields=required_fields,
+        rag_query=_build_rag_query(raw_query, brand, time_range, market_scope),
+        tavily_query=_build_tavily_query(raw_query, brand, time_range, market_scope),
+    )
+
+
+def _infer_brand(query: str, entities: List[str]) -> Optional[str]:
+    probes = [query] + entities
+    for brand, aliases in BRAND_ALIASES.items():
+        for probe in probes:
+            if any(alias and alias in str(probe) for alias in aliases):
+                return brand
+    for entity in entities:
+        if entity:
+            return entity
+    return None
+
+
+def _brand_aliases(brand: Optional[str]) -> List[str]:
+    if not brand:
+        return []
+    return BRAND_ALIASES.get(brand, [brand])
+
+
+def _normalize_time_range(query: str, requested: str) -> str:
+    text = f"{query} {requested}"
+    if any(token in text for token in ["近半年", "最近半年", "6个月", "六个月"]):
+        return "最近6个月"
+    if any(token in text for token in ["近三个月", "最近3个月", "3个月", "三个月"]):
+        return "最近3个月"
+    if any(token in text for token in ["最近12个月", "近12个月", "12个月", "一年"]):
+        return "最近12个月"
+    if requested:
+        return requested
+    return "最近6个月"
+
+
+def _infer_market_scope(query: str) -> str:
+    if "SUV" in query or "suv" in query:
+        return "新能源SUV" if "新能源" in query else "SUV"
+    if "新能源" in query:
+        return "新能源乘用车"
+    if "出口" in query or "海外" in query:
+        return "乘用车出口市场"
+    return "乘用车"
+
+
+def _infer_price_band(query: str) -> Optional[str]:
+    match = re.search(r"(\d{1,3})\s*[-~到至]\s*(\d{1,3})\s*万", query)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}万"
+    for token in ["10万以下", "10-15万", "15-20万", "20-30万", "30-50万", "50万以上"]:
+        if token in query:
+            return token
+    return None
+
+
+def _infer_power_type(query: str) -> Optional[str]:
+    if any(token in query for token in ["纯电", "BEV", "EV"]):
+        return "纯电动"
+    if any(token in query for token in ["插混", "PHEV"]):
+        return "插电式混合动力"
+    if "增程" in query:
+        return "增程式"
+    if "新能源" in query:
+        return "新能源"
+    return None
+
+
+def _build_rag_query(query: str, brand: Optional[str], time_range: str, market_scope: str) -> str:
+    topic = "销量 份额 竞品 价格 智能化 渠道 风险 政策"
+    return " ".join(part for part in [brand, query, time_range, market_scope, topic] if part)
+
+
+def _build_tavily_query(query: str, brand: Optional[str], time_range: str, market_scope: str) -> str:
+    topic = "销量 交付 市场份额 竞品 战略 政策"
+    return " ".join(part for part in [brand, query, time_range, market_scope, topic] if part)

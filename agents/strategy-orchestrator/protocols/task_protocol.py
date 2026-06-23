@@ -183,6 +183,7 @@ class OrchestrationResult:
     task_id: str                           # 对应的任务 ID
     success: bool
     user_intent: Dict[str, Any] = field(default_factory=dict)  # 原始用户意图
+    analysis_plan: Dict[str, Any] = field(default_factory=dict)  # 统一分析计划
     answer: str = ""                        # 结构化结论
     facts: List[Dict[str, Any]] = field(default_factory=list)  # 事实
     inferences: List[Dict[str, Any]] = field(default_factory=list)  # 推断
@@ -192,6 +193,7 @@ class OrchestrationResult:
     confidence_details: Dict[str, Any] = field(default_factory=dict)  # 置信度详情
     evidence_sources: List[Dict[str, Any]] = field(default_factory=list)  # 证据来源
     evidence_ledger: Dict[str, Any] = field(default_factory=dict)  # 证据账本
+    evidence_store: Dict[str, Any] = field(default_factory=dict)  # D/R/W 业务证据编号
     quality_passed: bool = False          # 质量门禁是否通过
     quality_summary: Dict[str, Any] = field(default_factory=dict)  # 质量门禁摘要
     failed_quality_checks: List[Dict[str, Any]] = field(default_factory=list)  # 未通过项

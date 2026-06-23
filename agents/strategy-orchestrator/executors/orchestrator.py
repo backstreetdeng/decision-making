@@ -49,6 +49,10 @@ try:
         detect_failure_type,
         get_rollback_handler
     )
+    from .planning.analysis_plan import (
+        AnalysisPlan,
+        build_analysis_plan
+    )
 except ImportError as e:
     # 如果在 OpenClaw workspace 中，添加路径
     workspace_path = r"C:\Users\11489\.openclaw\workspace-market\agents\strategy-orchestrator"
@@ -80,6 +84,10 @@ except ImportError as e:
         detect_failure_type,
         get_rollback_handler
     )
+    from planning.analysis_plan import (
+        AnalysisPlan,
+        build_analysis_plan
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -101,6 +109,7 @@ class ToolResult:
 class ReactState:
     """ReAct 循环状态"""
     cycle: int = 0
+    analysis_plan: Optional[AnalysisPlan] = None
     current_plan: List[str] = field(default_factory=list)
     completed_steps: List[str] = field(default_factory=list)
     tool_results: List[ToolResult] = field(default_factory=list)
@@ -181,6 +190,7 @@ class StrategyOrchestrator:
         
         # 初始化 ReAct 状态
         state = ReactState()
+        state.analysis_plan = build_analysis_plan(task)
         
         # 执行 ReAct 循环
         result = self._run_react_loop(task, state)
@@ -276,6 +286,7 @@ class StrategyOrchestrator:
         plan = []
         task_type = task.task_type
         user_intent = task.user_intent
+        analysis_plan = state.analysis_plan or build_analysis_plan(task)
         
         # 根据任务类型决定需要哪些证据
         if task_type == TaskType.MARKET_TREND:
@@ -516,6 +527,8 @@ class StrategyOrchestrator:
         """构建最终结果"""
         # 从证据账本生成结果
         report = self.evidence_ledger.generate_report()
+        analysis_plan = state.analysis_plan or build_analysis_plan(task)
+        evidence_store = self._build_evidence_store(report)
         
         # 构建 facts 和 inferences
         facts = []
@@ -576,6 +589,7 @@ class StrategyOrchestrator:
             task_id=task.task_id,
             success=state.is_complete or overall_conf >= 0.5,
             user_intent=task.user_intent.to_dict() if task.user_intent else {},
+            analysis_plan=analysis_plan.to_dict(),
             answer=answer,
             facts=facts,
             inferences=inferences,
@@ -598,6 +612,7 @@ class StrategyOrchestrator:
                 for e in self.evidence_ledger.evidences.values()
             ],
             evidence_ledger=report,
+            evidence_store=evidence_store,
             missing_or_uncertain=missing_or_uncertain,
             next_steps=self._generate_next_steps(task, state),
             errors=[r.error for r in state.tool_results if not r.success and r.error],
@@ -644,18 +659,20 @@ class StrategyOrchestrator:
             from market_strategy.knowledge_base import MarketKnowledgeBase
             
             kb = MarketKnowledgeBase()
+            analysis_plan = state.analysis_plan or build_analysis_plan(task)
+            time_range = analysis_plan.time_range
             
             # 根据参数决定查询类型
             if "brand" in param.lower():
                 data = kb.get_sales_by_brand(
-                    time_range=task.user_intent.time_range if task.user_intent else "最近12个月",
+                    time_range=time_range,
                     top_n=20
                 )
             elif "trend" in param.lower():
                 data = kb.get_sales_trend()
             elif "overview" in param.lower() or "market" in param.lower():
                 data = kb.get_market_overview(
-                    time_range=task.user_intent.time_range if task.user_intent else "最近12个月"
+                    time_range=time_range
                 )
             else:
                 data = kb.get_data_summary()
@@ -670,7 +687,7 @@ class StrategyOrchestrator:
                     tool="knowledge_base",
                     claim=f"结构化数据查询: {param}",
                     content=str(data)[:500],
-                    time_range=task.user_intent.time_range if task.user_intent else "最近12个月",
+                    time_range=time_range,
                     data_caliber="结构化销量/份额数据库口径，以 MarketKnowledgeBase 返回字段为准",
                     source_credibility=0.85,
                     coverage_dimensions=["销量", "份额", "增速", "时间范围", "口径"],
@@ -690,7 +707,8 @@ class StrategyOrchestrator:
             sys.path.insert(0, r"E:\AI\data\envs\car_agent_env\ai-decision\rag-engine")
             from retrieval.retriever import retrieve
             
-            query = task.user_intent.raw_query if task.user_intent else param
+            analysis_plan = state.analysis_plan or build_analysis_plan(task)
+            query = analysis_plan.rag_query or (task.user_intent.raw_query if task.user_intent else param)
             results = retrieve(query, top_k=5)
             
             # 构建证据
@@ -704,7 +722,7 @@ class StrategyOrchestrator:
                     tool="vector_retriever",
                     claim=f"RAG 检索: {query[:50]}",
                     content=evidence_content,
-                    time_range=f"用户问题时间范围: {task.user_intent.time_range if task.user_intent else '未指定'}；文档发布日期以元数据为准",
+                    time_range=f"用户问题时间范围: {analysis_plan.time_range}；文档发布日期以元数据为准",
                     data_caliber="向量检索文档摘要口径，非结构化统计口径",
                     source_credibility=0.70,
                     coverage_dimensions=["行业报告", "政策背景", "趋势解释"],
@@ -768,7 +786,8 @@ class StrategyOrchestrator:
     
     def _tool_web_search(self, param: str, task: OrchestrationTask, state: ReactState) -> Dict:
         """Tavily 网络搜索工具。"""
-        query = self._build_tavily_query(param, task)
+        analysis_plan = state.analysis_plan or build_analysis_plan(task)
+        query = analysis_plan.tavily_query or self._build_tavily_query(param, task)
         try:
             raw = self._run_tavily_search(query=query, max_results=6)
         except Exception as exc:
@@ -846,7 +865,60 @@ class StrategyOrchestrator:
             search_depth="basic",
         )
 
+    def _build_evidence_store(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """Build business-facing D/R/W evidence ids from the ledger."""
+        store = {"D": [], "R": [], "W": [], "A": []}
+        counters = {"D": 0, "R": 0, "W": 0, "A": 0}
+        source_to_bucket = {
+            "nl2sql-pg": "D",
+            "rag": "R",
+            "web-search": "W",
+        }
+        for evidence in report.get("evidences", []) or []:
+            bucket = source_to_bucket.get(evidence.get("source"), "A")
+            counters[bucket] += 1
+            item = {
+                "id": f"{bucket}{counters[bucket]}",
+                "evidence_id": evidence.get("evidence_id"),
+                "source": evidence.get("source"),
+                "tool": evidence.get("tool"),
+                "claim": evidence.get("claim"),
+                "content": evidence.get("content"),
+                "time_range": evidence.get("time_range"),
+                "data_caliber": evidence.get("data_caliber"),
+                "source_url": evidence.get("source_url"),
+                "source_date": evidence.get("source_date"),
+                "confidence": evidence.get("confidence"),
+                "coverage_score": evidence.get("coverage_score"),
+                "adoption_status": "accepted",
+                "rejection_reason": self._extract_rejection_reason(evidence),
+                "business_support": self._business_support_label(bucket),
+            }
+            store[bucket].append(item)
+        store["summary"] = {
+            "structured": len(store["D"]),
+            "rag": len(store["R"]),
+            "web": len(store["W"]),
+            "analysis": len(store["A"]),
+        }
+        return store
+
+    def _extract_rejection_reason(self, evidence: Dict[str, Any]) -> str:
+        limitations = evidence.get("limitations") or []
+        if not limitations:
+            return ""
+        return "; ".join(str(item) for item in limitations if item)
+
+    def _business_support_label(self, bucket: str) -> str:
+        return {
+            "D": "结构化市场指标支撑",
+            "R": "业务文档/政策/行业报告支撑",
+            "W": "外部实时网页补证",
+            "A": "分析框架推断支撑",
+        }.get(bucket, "证据支撑")
+
     def _build_tavily_query(self, param: str, task: OrchestrationTask) -> str:
+        # Fallback path for callers that do not pass ReactState.
         intent = task.user_intent
         raw_query = intent.raw_query if intent else ""
         time_range = intent.time_range if intent else ""
@@ -1079,6 +1151,7 @@ class StrategyOrchestrator:
         """构建自然语言答案"""
         conf = report.get("summary", {}).get("overall_confidence", 0)
         intent = task.user_intent
+        analysis_plan = build_analysis_plan(task)
         time_range = intent.time_range if intent else "unknown"
         entities = intent.entities if intent else []
         
@@ -1089,6 +1162,12 @@ class StrategyOrchestrator:
         answer_parts.append(f"分析范围: {time_range}")
         if entities:
             answer_parts.append("涉及对象: " + "、".join(entities))
+        answer_parts.append(
+            "统一分析计划: "
+            f"品牌={analysis_plan.target_brand or '未指定'}；"
+            f"市场={analysis_plan.market_scope}；"
+            f"时间={analysis_plan.time_range}"
+        )
         answer_parts.append("")
         
         # 证据来源
