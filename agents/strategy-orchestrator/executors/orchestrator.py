@@ -173,6 +173,7 @@ class StrategyOrchestrator:
         
         # 重置证据账本（新任务）
         reset_evidence_ledger()
+        self.evidence_ledger = get_evidence_ledger()
         
         # 初始化 ReAct 状态
         state = ReactState()
@@ -229,6 +230,12 @@ class StrategyOrchestrator:
                         content=tool_result.evidence.content,
                         time_range=tool_result.evidence.time_range,
                         metrics=tool_result.evidence.metrics,
+                        data_caliber=tool_result.evidence.data_caliber,
+                        source_url=tool_result.evidence.source_url,
+                        source_date=tool_result.evidence.source_date,
+                        source_credibility=tool_result.evidence.source_credibility,
+                        coverage_dimensions=tool_result.evidence.coverage_dimensions,
+                        coverage_score=tool_result.evidence.coverage_score,
                         confidence=tool_result.evidence.confidence,
                         limitations=tool_result.evidence.limitations
                     )
@@ -395,6 +402,7 @@ class StrategyOrchestrator:
         
         if success_count >= 2 and overall_conf >= 0.6 and not has_high_conflict:
             state.is_complete = True
+            state.should_stop = True
             state.stop_reason = "Sufficient evidence collected"
             logger.info("Evidence sufficient, marking complete")
         
@@ -460,11 +468,19 @@ class StrategyOrchestrator:
         
         # 检查缺失关键信息
         missing = self._check_missing_critical_evidence(task, state)
-        if missing:
+        if missing and not self._has_pending_structured_step(state):
             state.stop_reason = f"Missing critical: {missing}"
             return True
         
         return False
+
+    def _has_pending_structured_step(self, state: ReactState) -> bool:
+        """判断当前计划里是否还有未执行的结构化数据步骤。"""
+        completed = set(state.completed_steps)
+        return any(
+            step not in completed and "nl2sql" in step
+            for step in state.current_plan
+        )
     
     def _check_missing_critical_evidence(
         self,
@@ -495,19 +511,31 @@ class StrategyOrchestrator:
         inferences = []
         
         for evidence in self.evidence_ledger.evidences.values():
+            evidence_ref = {
+                "evidence_id": evidence.evidence_id,
+                "source": evidence.source,
+                "tool": evidence.tool,
+                "claim": evidence.claim,
+                "confidence": evidence.confidence,
+                "time_range": evidence.time_range,
+                "data_caliber": evidence.data_caliber,
+            }
             if evidence.source in ["nl2sql-pg", "rag"]:
                 facts.append({
                     "claim": evidence.claim,
                     "content": evidence.content[:200],
                     "source": evidence.source,
                     "confidence": evidence.confidence,
-                    "time_range": evidence.time_range
+                    "time_range": evidence.time_range,
+                    "data_caliber": evidence.data_caliber,
+                    "evidence": evidence_ref
                 })
             else:
                 inferences.append({
                     "claim": evidence.claim,
                     "source": evidence.source,
-                    "confidence": evidence.confidence
+                    "confidence": evidence.confidence,
+                    "evidence": evidence_ref
                 })
         
         # 识别机会和风险
@@ -527,12 +555,16 @@ class StrategyOrchestrator:
         if conflicts:
             missing_or_uncertain.append(f"存在 {len(conflicts)} 项证据冲突")
         
+        if overall_conf < 0.7:
+            missing_or_uncertain.append("总体置信度低于70%，需要补充更高质量证据后再用于决策")
+
         if not state.is_complete:
             missing_or_uncertain.append("证据可能不够完整")
         
         return OrchestrationResult(
             task_id=task.task_id,
             success=state.is_complete or overall_conf >= 0.5,
+            user_intent=task.user_intent.to_dict() if task.user_intent else {},
             answer=answer,
             facts=facts,
             inferences=inferences,
@@ -541,9 +573,20 @@ class StrategyOrchestrator:
             confidence=overall_conf,
             confidence_details=conf_details,
             evidence_sources=[
-                {"source": e.source, "tool": e.tool, "claim": e.claim}
+                {
+                    "evidence_id": e.evidence_id,
+                    "source": e.source,
+                    "tool": e.tool,
+                    "claim": e.claim,
+                    "time_range": e.time_range,
+                    "data_caliber": e.data_caliber,
+                    "source_url": e.source_url,
+                    "source_date": e.source_date,
+                    "confidence": e.confidence,
+                }
                 for e in self.evidence_ledger.evidences.values()
             ],
+            evidence_ledger=report,
             missing_or_uncertain=missing_or_uncertain,
             next_steps=self._generate_next_steps(task, state),
             errors=[r.error for r in state.tool_results if not r.success and r.error],
@@ -555,10 +598,28 @@ class StrategyOrchestrator:
         """应用质量门禁"""
         result_dict = result.to_dict()
         passed, checks = self.quality_gate.run_all(result_dict)
+        failed_checks = [
+            {
+                "check": item.check_name,
+                "level": getattr(item.level, "value", str(item.level)),
+                "message": item.message,
+                "suggestions": item.suggestions,
+            }
+            for item in checks
+            if not item.passed
+        ]
+
+        result.quality_passed = passed
+        result.failed_quality_checks = failed_checks
+        result.quality_summary = {
+            "quality_passed": passed,
+            "total_checks": len(checks),
+            "passed_checks": sum(1 for item in checks if item.passed),
+            "failed_checks": failed_checks,
+        }
         
         if not passed:
             logger.warning("Quality gate not passed")
-            # 可以在这里添加处理逻辑
         
         return result
     
@@ -599,6 +660,10 @@ class StrategyOrchestrator:
                     claim=f"结构化数据查询: {param}",
                     content=str(data)[:500],
                     time_range=task.user_intent.time_range if task.user_intent else "最近12个月",
+                    data_caliber="结构化销量/份额数据库口径，以 MarketKnowledgeBase 返回字段为准",
+                    source_credibility=0.85,
+                    coverage_dimensions=["销量", "份额", "增速", "时间范围", "口径"],
+                    coverage_score=0.75,
                     confidence=0.85,
                     metrics=["销量", "份额", "增速"]
                 )
@@ -628,7 +693,11 @@ class StrategyOrchestrator:
                     tool="vector_retriever",
                     claim=f"RAG 检索: {query[:50]}",
                     content=evidence_content,
-                    time_range="unknown",
+                    time_range=f"用户问题时间范围: {task.user_intent.time_range if task.user_intent else '未指定'}；文档发布日期以元数据为准",
+                    data_caliber="向量检索文档摘要口径，非结构化统计口径",
+                    source_credibility=0.70,
+                    coverage_dimensions=["行业报告", "政策背景", "趋势解释"],
+                    coverage_score=0.60 if results else 0.20,
                     confidence=0.7,
                     limitations=["仅返回已有文档"]
                 )
@@ -648,6 +717,10 @@ class StrategyOrchestrator:
                 tool=param,
                 claim=f"框架分析: {param}",
                 content="框架分析已完成",
+                data_caliber="基于已入账证据的分析框架推断，非原始数据来源",
+                source_credibility=0.60,
+                coverage_dimensions=["推断", "战略框架"],
+                coverage_score=0.50,
                 confidence=0.6
             )
         }
@@ -674,6 +747,10 @@ class StrategyOrchestrator:
                 tool="report",
                 claim="报告已生成",
                 content=report[:200],
+                data_caliber="基于证据账本的报告生成结果，非新增事实来源",
+                source_credibility=0.55,
+                coverage_dimensions=["报告"],
+                coverage_score=0.50,
                 confidence=0.7
             )
         }
@@ -687,6 +764,11 @@ class StrategyOrchestrator:
                 tool="search",
                 claim=f"网络搜索: {param}",
                 content="搜索功能待实现",
+                time_range="实时外部检索；当前为占位结果",
+                data_caliber="外部网页检索口径，当前为占位结果",
+                source_credibility=0.30,
+                coverage_dimensions=["外部补证"],
+                coverage_score=0.10,
                 confidence=0.5,
                 limitations=["搜索功能待实现"]
             )
@@ -740,11 +822,17 @@ class StrategyOrchestrator:
     ) -> str:
         """构建自然语言答案"""
         conf = report.get("summary", {}).get("overall_confidence", 0)
+        intent = task.user_intent
+        time_range = intent.time_range if intent else "unknown"
+        entities = intent.entities if intent else []
         
         answer_parts = []
         
         # 基本信息
         answer_parts.append(f"基于现有证据的分析（置信度: {conf:.0%}）")
+        answer_parts.append(f"分析范围: {time_range}")
+        if entities:
+            answer_parts.append("涉及对象: " + "、".join(entities))
         answer_parts.append("")
         
         # 证据来源
@@ -754,6 +842,63 @@ class StrategyOrchestrator:
             if source_list:
                 answer_parts.append("数据来源: " + ", ".join(source_list))
                 answer_parts.append("")
+
+        confidence_details = report.get("summary", {}).get("confidence_details", {})
+        if confidence_details:
+            answer_parts.append("置信度计算:")
+            answer_parts.append(
+                "- 数据覆盖={data:.0%}，RAG覆盖={rag:.0%}，来源可信度={source:.0%}，冲突系数={conflict:.0%}".format(
+                    data=confidence_details.get("data_coverage_factor", 0),
+                    rag=confidence_details.get("rag_coverage_factor", 0),
+                    source=confidence_details.get("source_credibility_factor", 0),
+                    conflict=confidence_details.get("conflict_factor", 0),
+                )
+            )
+            answer_parts.append("")
+
+        evidences = report.get("evidences", [])
+        fact_evidences = [
+            e for e in evidences
+            if e.get("source") in ["nl2sql-pg", "rag"]
+        ]
+        inference_evidences = [
+            e for e in evidences
+            if e.get("source") not in ["nl2sql-pg", "rag"]
+        ]
+
+        if fact_evidences:
+            answer_parts.append("事实依据:")
+            for evidence in fact_evidences[:4]:
+                content = self._summarize_evidence_content(evidence.get("content", ""))
+                answer_parts.append(
+                    f"- [{evidence.get('source')}] {evidence.get('claim')}: {content}"
+                )
+                answer_parts.append(
+                    f"  口径: {evidence.get('data_caliber', 'unknown')}；时间范围: {evidence.get('time_range', 'unknown')}"
+                )
+            answer_parts.append("")
+
+        if inference_evidences:
+            answer_parts.append("分析判断:")
+            for evidence in inference_evidences[:4]:
+                answer_parts.append(
+                    f"- [{evidence.get('source')}] {evidence.get('claim')} "
+                    f"(置信度 {evidence.get('confidence', 0):.0%})"
+                )
+            answer_parts.append("")
+
+        if evidences:
+            answer_parts.append("证据账本:")
+            for idx, evidence in enumerate(evidences[:8], 1):
+                answer_parts.append(
+                    f"- E{idx} | {evidence.get('source')} | {evidence.get('claim')} | "
+                    f"置信度 {evidence.get('confidence', 0):.0%} | "
+                    f"口径 {evidence.get('data_caliber', 'unknown')} | "
+                    f"时间 {evidence.get('time_range', 'unknown')}"
+                )
+            if len(evidences) > 8:
+                answer_parts.append(f"- 另有 {len(evidences) - 8} 条证据见 evidence_ledger 字段")
+            answer_parts.append("")
         
         # 机会和风险
         if opportunities:
@@ -769,6 +914,52 @@ class StrategyOrchestrator:
             answer_parts.append("")
         
         return "\n".join(answer_parts)
+
+    def _summarize_evidence_content(self, content: str, max_len: int = 160) -> str:
+        """压缩证据内容，避免答案只展示原始长 JSON/表格。"""
+        if not content:
+            return "无摘要"
+        structured_summary = self._summarize_structured_content(content)
+        if structured_summary:
+            return structured_summary
+        compact = " ".join(str(content).split())
+        if len(compact) <= max_len:
+            return compact
+        return compact[:max_len].rstrip() + "..."
+
+    def _summarize_structured_content(self, content: str) -> str:
+        """为常见 SQL 结果生成紧凑摘要。"""
+        import re
+
+        text = str(content)
+
+        brand_rows = re.findall(
+            r"'brand': '([^']+)', 'sales': (\d+), 'model_count': (\d+), 'share': ([\d.]+)",
+            text
+        )
+        if brand_rows:
+            items = []
+            for brand, sales, model_count, share in brand_rows[:3]:
+                items.append(
+                    f"{brand}销量{int(sales):,}辆、份额{float(share):.2f}%、车型{model_count}款"
+                )
+            return "；".join(items)
+
+        total_sales = re.search(r"'total_sales': (\d+)", text)
+        avg_monthly = re.search(r"'avg_monthly_sales': Decimal\('([^']+)'\)", text)
+        brand_count = re.search(r"'brand_count': (\d+)", text)
+        model_count = re.search(r"'model_count': (\d+)", text)
+        if total_sales:
+            parts = [f"总销量{int(total_sales.group(1)):,}辆"]
+            if avg_monthly:
+                parts.append(f"月均销量{float(avg_monthly.group(1)):,.0f}辆")
+            if brand_count:
+                parts.append(f"覆盖品牌{brand_count.group(1)}个")
+            if model_count:
+                parts.append(f"覆盖车型{model_count.group(1)}个")
+            return "，".join(parts)
+
+        return ""
     
     def _generate_markdown_report(
         self,

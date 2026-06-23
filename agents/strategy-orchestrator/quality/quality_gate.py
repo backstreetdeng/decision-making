@@ -53,8 +53,11 @@ class QualityGate:
             self._check_answer_relevance,
             self._check_scope_clarity,
             self._check_source_citation,
+            self._check_evidence_ledger_output,
+            self._check_data_caliber_and_time_range,
             self._check_fact_inference_separation,
             self._check_confidence_statement,
+            self._check_confidence_factor_model,
             self._check_uncertainty_disclosure,
             self._check_nofabrication,
             self._check_next_steps,
@@ -287,6 +290,89 @@ class QualityGate:
             level=QualityLevel.POOR,
             message="无法判断事实/推断分离"
         )
+
+    def _check_evidence_ledger_output(self, result: Dict[str, Any]) -> QualityCheckResult:
+        """检查: 是否输出证据账本"""
+        ledger = result.get("evidence_ledger") or {}
+        evidences = ledger.get("evidences") or []
+        summary = ledger.get("summary") or {}
+
+        if not ledger:
+            return QualityCheckResult(
+                check_name="evidence_ledger_output",
+                passed=False,
+                level=QualityLevel.FAILED,
+                message="没有输出证据账本"
+            )
+
+        if not evidences:
+            return QualityCheckResult(
+                check_name="evidence_ledger_output",
+                passed=False,
+                level=QualityLevel.FAILED,
+                message="证据账本为空"
+            )
+
+        if "overall_confidence" not in summary:
+            return QualityCheckResult(
+                check_name="evidence_ledger_output",
+                passed=False,
+                level=QualityLevel.POOR,
+                message="证据账本缺少总体置信度摘要"
+            )
+
+        return QualityCheckResult(
+            check_name="evidence_ledger_output",
+            passed=True,
+            level=QualityLevel.EXCELLENT,
+            message=f"已输出证据账本，共 {len(evidences)} 条证据",
+            details={"evidence_count": len(evidences)}
+        )
+
+    def _check_data_caliber_and_time_range(self, result: Dict[str, Any]) -> QualityCheckResult:
+        """检查: 关键事实是否说明数据口径和时间范围"""
+        facts = result.get("facts") or []
+        evidence_sources = result.get("evidence_sources") or []
+
+        source_facts = facts or evidence_sources
+        if not source_facts:
+            return QualityCheckResult(
+                check_name="data_caliber_and_time_range",
+                passed=False,
+                level=QualityLevel.FAILED,
+                message="没有可检查的数据事实或证据来源"
+            )
+
+        missing_time = []
+        missing_caliber = []
+        for item in source_facts:
+            source = item.get("source")
+            if source not in ("nl2sql-pg", "rag", "web-search", "external-api"):
+                continue
+            if not item.get("time_range") or item.get("time_range") == "unknown":
+                missing_time.append(item.get("claim") or source)
+            if not item.get("data_caliber") or item.get("data_caliber") == "unknown":
+                missing_caliber.append(item.get("claim") or source)
+
+        if missing_time or missing_caliber:
+            return QualityCheckResult(
+                check_name="data_caliber_and_time_range",
+                passed=False,
+                level=QualityLevel.POOR,
+                message=f"存在 {len(missing_time)} 条缺时间范围、{len(missing_caliber)} 条缺数据口径的关键证据",
+                details={
+                    "missing_time_range": missing_time[:5],
+                    "missing_data_caliber": missing_caliber[:5],
+                },
+                suggestions=["为每条关键事实补充 time_range 和 data_caliber"]
+            )
+
+        return QualityCheckResult(
+            check_name="data_caliber_and_time_range",
+            passed=True,
+            level=QualityLevel.GOOD,
+            message="关键事实已说明时间范围和数据口径"
+        )
     
     def _check_confidence_statement(self, result: Dict[str, Any]) -> QualityCheckResult:
         """检查5: 是否说明了置信度"""
@@ -340,6 +426,35 @@ class QualityGate:
             level=level,
             message=f"置信度评估: {confidence:.0%} ({message})",
             details=details
+        )
+
+    def _check_confidence_factor_model(self, result: Dict[str, Any]) -> QualityCheckResult:
+        """检查: 置信度是否由 P3 四因子共同计算"""
+        details = result.get("confidence_details") or {}
+        required = [
+            "data_coverage_factor",
+            "rag_coverage_factor",
+            "source_credibility_factor",
+            "conflict_factor",
+        ]
+        missing = [item for item in required if item not in details]
+
+        if missing:
+            return QualityCheckResult(
+                check_name="confidence_factor_model",
+                passed=False,
+                level=QualityLevel.FAILED,
+                message=f"置信度缺少四因子计算详情: {', '.join(missing)}",
+                details={"missing": missing},
+                suggestions=["使用数据覆盖、RAG 覆盖、来源可信度、冲突程度共同计算置信度"]
+            )
+
+        return QualityCheckResult(
+            check_name="confidence_factor_model",
+            passed=True,
+            level=QualityLevel.EXCELLENT,
+            message="置信度已包含数据覆盖、RAG 覆盖、来源可信度和冲突程度四因子",
+            details={k: details.get(k) for k in required}
         )
     
     def _check_uncertainty_disclosure(self, result: Dict[str, Any]) -> QualityCheckResult:

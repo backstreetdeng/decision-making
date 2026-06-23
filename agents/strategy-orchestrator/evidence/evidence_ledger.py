@@ -49,6 +49,12 @@ class Evidence:
         content: 原始内容摘要
         time_range: 数据/文档覆盖时间
         metrics: 涉及的指标列表
+        data_caliber: 数据口径/统计口径
+        source_url: 外部来源 URL（如有）
+        source_date: 来源发布日期或数据发布日期（如有）
+        source_credibility: 来源可信度 0-1
+        coverage_dimensions: 这条证据覆盖的分析维度
+        coverage_score: 这条证据对问题的覆盖度 0-1
         confidence: 置信度 0-1
         limitations: 局限性说明
         tags: 标签列表
@@ -61,6 +67,12 @@ class Evidence:
     content: str
     time_range: str = "unknown"
     metrics: List[str] = field(default_factory=list)
+    data_caliber: str = "unknown"
+    source_url: str = ""
+    source_date: str = ""
+    source_credibility: Optional[float] = None
+    coverage_dimensions: List[str] = field(default_factory=list)
+    coverage_score: Optional[float] = None
     confidence: float = 0.5
     limitations: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
@@ -122,6 +134,12 @@ class EvidenceLedger:
         content: str,
         time_range: str = "unknown",
         metrics: List[str] = None,
+        data_caliber: str = "unknown",
+        source_url: str = "",
+        source_date: str = "",
+        source_credibility: Optional[float] = None,
+        coverage_dimensions: List[str] = None,
+        coverage_score: Optional[float] = None,
         confidence: float = 0.5,
         limitations: List[str] = None,
         tags: List[str] = None
@@ -139,6 +157,12 @@ class EvidenceLedger:
             content=content[:2000] if len(content) > 2000 else content,  # 截断过长内容
             time_range=time_range,
             metrics=metrics or [],
+            data_caliber=data_caliber,
+            source_url=source_url,
+            source_date=source_date,
+            source_credibility=source_credibility,
+            coverage_dimensions=coverage_dimensions or [],
+            coverage_score=coverage_score,
             confidence=confidence,
             limitations=limitations or [],
             tags=tags or ["pending"]
@@ -289,63 +313,133 @@ class EvidenceLedger:
         if not self.evidences:
             return 0.0, {"error": "No evidences"}
         
-        # 按来源分组计算加权平均
-        source_weights = {
-            EvidenceSource.NL2SQL.value: 0.8,
-            EvidenceSource.RAG.value: 0.7,
-            EvidenceSource.ANALYSIS_AGENT.value: 0.65,
-            EvidenceSource.WEB_SEARCH.value: 0.6,
-            EvidenceSource.USER_INPUT.value: 0.5,
-            EvidenceSource.LLM_INFERENCE.value: 0.4,
-        }
-        
-        weighted_sum = 0.0
-        weight_total = 0.0
-        
-        for evidence in self.evidences.values():
-            weight = source_weights.get(evidence.source, 0.5)
-            # 根据 limitations 调整权重
-            if evidence.limitations:
-                weight *= (1 - 0.1 * len(evidence.limitations))
-            
-            weighted_sum += evidence.confidence * weight
-            weight_total += weight
-        
-        base_confidence = weighted_sum / weight_total if weight_total > 0 else 0.0
-        
-        # 冲突系数
+        source_weights = self._source_weight_map()
+        sources_present = set(e.source for e in self.evidences.values())
+        base_confidence = self._weighted_evidence_confidence(source_weights)
+        data_coverage_factor = self._calculate_data_coverage()
+        rag_coverage_factor = self._calculate_rag_coverage()
+        source_credibility_factor = self._calculate_source_credibility(source_weights)
+        conflict_factor = self._calculate_conflict_factor()
+
+        # P3 confidence model:
+        # confidence = f(data coverage, RAG coverage, source credibility, conflict degree)
+        # Base evidence confidence remains a minor stabilizer, not the whole answer.
+        combined = (
+            0.30 * data_coverage_factor
+            + 0.25 * rag_coverage_factor
+            + 0.30 * source_credibility_factor
+            + 0.15 * base_confidence
+        )
+        overall = combined * conflict_factor
+
         high_conflicts = len([c for c in self.conflicts if c.severity == "high"])
         medium_conflicts = len([c for c in self.conflicts if c.severity == "medium"])
         
-        if high_conflicts > 0:
-            conflict_factor = 0.5
-        elif medium_conflicts > 0:
-            conflict_factor = 0.8
-        else:
-            conflict_factor = 1.0
-        
-        # 完整性系数（根据是否有结构化+RAG+分析多源）
-        sources_present = set(e.source for e in self.evidences.values())
-        if EvidenceSource.NL2SQL.value in sources_present and EvidenceSource.RAG.value in sources_present:
-            completeness_factor = 1.0
-        elif EvidenceSource.NL2SQL.value in sources_present or EvidenceSource.RAG.value in sources_present:
-            completeness_factor = 0.85
-        else:
-            completeness_factor = 0.6
-        
-        overall = base_confidence * conflict_factor * completeness_factor
-        
         details = {
             "base_confidence": round(base_confidence, 3),
+            "data_coverage_factor": round(data_coverage_factor, 3),
+            "rag_coverage_factor": round(rag_coverage_factor, 3),
+            "source_credibility_factor": round(source_credibility_factor, 3),
             "conflict_factor": conflict_factor,
-            "completeness_factor": completeness_factor,
             "high_conflicts": high_conflicts,
             "medium_conflicts": medium_conflicts,
             "sources_count": len(sources_present),
-            "total_evidences": len(self.evidences)
+            "total_evidences": len(self.evidences),
+            "model": "0.30*data_coverage + 0.25*rag_coverage + 0.30*source_credibility + 0.15*base_confidence, then multiplied by conflict_factor"
         }
         
         return round(overall, 3), details
+
+    def _source_weight_map(self) -> Dict[str, float]:
+        return {
+            EvidenceSource.NL2SQL.value: 0.85,
+            EvidenceSource.RAG.value: 0.72,
+            EvidenceSource.ANALYSIS_AGENT.value: 0.60,
+            EvidenceSource.WEB_SEARCH.value: 0.58,
+            EvidenceSource.USER_INPUT.value: 0.50,
+            EvidenceSource.LLM_INFERENCE.value: 0.40,
+            EvidenceSource.EXTERNAL_API.value: 0.65,
+        }
+
+    def _weighted_evidence_confidence(self, source_weights: Dict[str, float]) -> float:
+        weighted_sum = 0.0
+        weight_total = 0.0
+
+        for evidence in self.evidences.values():
+            weight = source_weights.get(evidence.source, 0.5)
+            if evidence.limitations:
+                weight *= max(0.5, 1 - 0.1 * len(evidence.limitations))
+            weighted_sum += evidence.confidence * weight
+            weight_total += weight
+
+        return weighted_sum / weight_total if weight_total > 0 else 0.0
+
+    def _calculate_data_coverage(self) -> float:
+        structured = [
+            e for e in self.evidences.values()
+            if e.source == EvidenceSource.NL2SQL.value
+        ]
+        if not structured:
+            return 0.25
+
+        required_dimensions = {
+            "销量", "份额", "增速", "趋势", "车型", "价格", "动力", "时间范围", "口径"
+        }
+        covered = set()
+        coverage_scores = []
+        for evidence in structured:
+            covered.update(evidence.metrics or [])
+            covered.update(evidence.coverage_dimensions or [])
+            if evidence.time_range and evidence.time_range != "unknown":
+                covered.add("时间范围")
+            if evidence.data_caliber and evidence.data_caliber != "unknown":
+                covered.add("口径")
+            if evidence.coverage_score is not None:
+                coverage_scores.append(max(0.0, min(1.0, evidence.coverage_score)))
+
+        dimension_score = min(1.0, len(covered & required_dimensions) / 6.0)
+        explicit_score = sum(coverage_scores) / len(coverage_scores) if coverage_scores else dimension_score
+        return max(0.25, min(1.0, (dimension_score + explicit_score) / 2.0))
+
+    def _calculate_rag_coverage(self) -> float:
+        rag_items = [
+            e for e in self.evidences.values()
+            if e.source == EvidenceSource.RAG.value
+        ]
+        if not rag_items:
+            return 0.25
+
+        avg_confidence = sum(e.confidence for e in rag_items) / len(rag_items)
+        avg_coverage = sum(
+            max(0.0, min(1.0, e.coverage_score if e.coverage_score is not None else e.confidence))
+            for e in rag_items
+        ) / len(rag_items)
+        count_factor = min(1.0, len(rag_items) / 3.0)
+        limitation_penalty = min(0.3, 0.08 * sum(len(e.limitations) for e in rag_items))
+        return max(0.2, min(1.0, 0.35 * count_factor + 0.35 * avg_confidence + 0.30 * avg_coverage - limitation_penalty))
+
+    def _calculate_source_credibility(self, source_weights: Dict[str, float]) -> float:
+        if not self.evidences:
+            return 0.0
+        scores = []
+        for evidence in self.evidences.values():
+            score = evidence.source_credibility
+            if score is None:
+                score = source_weights.get(evidence.source, 0.5)
+            if evidence.limitations:
+                score *= max(0.5, 1 - 0.08 * len(evidence.limitations))
+            scores.append(max(0.0, min(1.0, score)))
+        return sum(scores) / len(scores)
+
+    def _calculate_conflict_factor(self) -> float:
+        high_conflicts = len([c for c in self.conflicts if c.severity == "high"])
+        medium_conflicts = len([c for c in self.conflicts if c.severity == "medium"])
+
+        if high_conflicts > 0:
+            return 0.5
+        if medium_conflicts > 0:
+            return 0.8
+        return 1.0
     
     def generate_report(self) -> Dict[str, Any]:
         """生成证据账本报告"""
