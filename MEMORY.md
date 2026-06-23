@@ -111,6 +111,13 @@
    - 共享文件 → share/
    - 个人文件 → workspace-market/memory/
    - 临时调试脚本（py/sh等）→ temp/
+### 5. Git 提交与推送规范（2026-06-23）
+   - 每次完成代码、测试、规范或记忆文件调整后，必须及时 `git commit`。
+   - commit 前只纳入本次任务相关文件，避免混入无关脏文件。
+   - push 前必须先执行：
+     - `git config --global http.proxy http://127.0.0.1:7897`
+     - `git config --global https.proxy http://127.0.0.1:7897`
+   - commit 后必须 `git push`；若 push 失败，要告知 commit hash 和失败原因，并记录可恢复信息。
 
 ## 目录结构
 - .learnings/ - 自我成长记录（LEARNINGS.md, ERRORS.md, FEATURE_REQUESTS.md）

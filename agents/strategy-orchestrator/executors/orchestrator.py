@@ -57,6 +57,12 @@ try:
         AnalysisPlan,
         build_analysis_plan
     )
+    from .tools.targeted_sql_pack import (
+        REQUIRED_TARGETED_SQL_BLOCKS,
+        build_targeted_sql_evidences,
+        missing_required_blocks,
+        run_targeted_sql_pack,
+    )
 except ImportError as e:
     # 如果在 OpenClaw workspace 中，添加路径
     workspace_path = r"C:\Users\11489\.openclaw\workspace-market\agents\strategy-orchestrator"
@@ -76,6 +82,10 @@ except ImportError as e:
         get_evidence_ledger,
         reset_evidence_ledger
     )
+    from evidence.evidence_factory import (
+        build_sql_evidence,
+        build_rag_evidence,
+    )
     from quality.quality_gate import (
         QualityGate,
         get_quality_gate,
@@ -91,6 +101,12 @@ except ImportError as e:
     from planning.analysis_plan import (
         AnalysisPlan,
         build_analysis_plan
+    )
+    from tools.targeted_sql_pack import (
+        REQUIRED_TARGETED_SQL_BLOCKS,
+        build_targeted_sql_evidences,
+        missing_required_blocks,
+        run_targeted_sql_pack,
     )
 
 
@@ -117,6 +133,10 @@ class ReactState:
     current_plan: List[str] = field(default_factory=list)
     completed_steps: List[str] = field(default_factory=list)
     tool_results: List[ToolResult] = field(default_factory=list)
+    replan_queue: List[str] = field(default_factory=list)
+    reflection: Dict[str, Any] = field(default_factory=dict)
+    replan_history: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_gaps: List[str] = field(default_factory=list)
     is_complete: bool = False
     stop_reason: str = ""
     should_stop: bool = False
@@ -156,6 +176,8 @@ class StrategyOrchestrator:
         # 在实际运行时会通过配置注入
         
         # 结构化数据查询
+        self._tools["targeted-sql-pack"] = self._tool_targeted_sql_pack
+        self._tools["targeted_sql_pack"] = self._tool_targeted_sql_pack
         self._tools["nl2sql-pg"] = self._tool_nl2sql
         
         # RAG 检索
@@ -230,6 +252,10 @@ class StrategyOrchestrator:
             plan = self._plan(task, state)
             state.current_plan = plan
             logger.info(f"Plan: {plan}")
+            if not plan:
+                state.should_stop = True
+                state.stop_reason = "No further steps after reflection"
+                break
             
             # ===== Act =====
             for step in plan:
@@ -254,6 +280,7 @@ class StrategyOrchestrator:
                         data_caliber=evidence.data_caliber,
                         source_url=evidence.source_url,
                         source_date=evidence.source_date,
+                        source_grade=evidence.source_grade,
                         source_credibility=evidence.source_credibility,
                         coverage_dimensions=evidence.coverage_dimensions,
                         coverage_score=evidence.coverage_score,
@@ -276,6 +303,9 @@ class StrategyOrchestrator:
             if not state.should_stop:
                 self._replan(task, state)
         
+        if not state.stop_reason and state.cycle >= max_cycles and not state.is_complete:
+            state.stop_reason = "Max cycles reached"
+        
         # ===== 构建结果 =====
         return self._build_result(task, state)
     
@@ -287,6 +317,11 @@ class StrategyOrchestrator:
         """
         Plan 阶段：理解问题，拆解任务，选择工具
         """
+        if state.replan_queue:
+            queued = list(state.replan_queue)
+            state.replan_queue.clear()
+            return queued
+
         plan = []
         task_type = task.task_type
         user_intent = task.user_intent
@@ -295,31 +330,32 @@ class StrategyOrchestrator:
         # 根据任务类型决定需要哪些证据
         if task_type == TaskType.MARKET_TREND:
             # 市场趋势：需要结构化数据 + RAG 上下文
-            plan = ["nl2sql-pg:get_market_trend", "rag:get_market_reports"]
+            plan = ["targeted-sql-pack:core_market_metrics", "nl2sql-pg:get_market_trend", "rag:get_market_reports"]
             if not user_intent.constraints or "no-framework" not in user_intent.constraints:
                 plan.append("analysis-framework:trend_analysis")
         
         elif task_type == TaskType.COMPETITOR_ANALYSIS:
             # 竞品分析：需要结构化数据 + RAG + 框架
-            plan = ["nl2sql-pg:get_sales_by_brand", "rag:get_competitor_info"]
+            plan = ["targeted-sql-pack:core_market_metrics", "nl2sql-pg:get_sales_by_brand", "rag:get_competitor_info"]
             if not user_intent.constraints or "no-framework" not in user_intent.constraints:
                 plan.append("analysis-framework:competitive_matrix")
         
         elif task_type == TaskType.POLICY_IMPACT:
             # 政策影响：RAG 为主
-            plan = ["rag:get_policies", "nl2sql-pg:get_market_data_for_policy"]
+            plan = ["rag:get_policies", "targeted-sql-pack:policy_market_metrics", "nl2sql-pg:get_market_data_for_policy"]
             if not user_intent.constraints or "no-framework" not in user_intent.constraints:
                 plan.append("analysis-framework:pest_political")
         
         elif task_type == TaskType.OPPORTUNITY_ASSESSMENT:
             # 机会评估：多源 + SWOT + TAM
-            plan = ["nl2sql-pg:get_market_size", "rag:get_market_reports", "web-search:get_trends"]
+            plan = ["targeted-sql-pack:core_market_metrics", "nl2sql-pg:get_market_size", "rag:get_market_reports", "web-search:get_trends"]
             if not user_intent.constraints or "no-framework" not in user_intent.constraints:
                 plan.append("analysis-framework:swot")
         
         elif task_type == TaskType.COMPREHENSIVE_RESEARCH:
             # 综合研究：全量
             plan = [
+                "targeted-sql-pack:core_market_metrics",
                 "nl2sql-pg:get_full_market_data",
                 "rag:get_all_relevant_docs",
                 "analysis-framework:comprehensive"
@@ -327,13 +363,13 @@ class StrategyOrchestrator:
         
         elif task_type == TaskType.SIMPLE_QUERY:
             # 简单查询：只取结构化数据
-            plan = ["nl2sql-pg:get_data"]
+            plan = ["targeted-sql-pack:core_market_metrics", "nl2sql-pg:get_data"]
         
         else:
             # 未知类型：保守策略
-            plan = ["nl2sql-pg:get_basic_data", "rag:get_context"]
+            plan = ["targeted-sql-pack:core_market_metrics", "nl2sql-pg:get_basic_data", "rag:get_context"]
         
-        return plan
+        return [step for step in plan if not self._step_succeeded(state, step)]
     
     def _execute_step(
         self,
@@ -375,13 +411,19 @@ class StrategyOrchestrator:
                 evidence = result['evidence']
             if isinstance(result, dict) and 'evidences' in result:
                 evidences = result.get('evidences') or []
+            result_success = True
+            result_error = None
+            if isinstance(result, dict) and result.get("success") is False:
+                result_success = False
+                result_error = str(result.get("error") or "Tool returned success=False")
             
             return ToolResult(
                 tool_name=tool_name,
-                success=True,
+                success=result_success,
                 result=result,
                 evidence=evidence,
                 evidences=evidences,
+                error=result_error,
                 execution_time=time.time() - start_time
             )
 
@@ -418,15 +460,41 @@ class StrategyOrchestrator:
         if conflicts:
             logger.warning(f"Found {len(conflicts)} evidence conflicts")
         
+        structured_blocks = self._structured_blocks_seen(state)
+        missing_blocks = self._missing_targeted_sql_blocks(task, state)
+        missing_sources = self._missing_evidence_sources(task, state)
+        state.evidence_gaps = []
+        if missing_blocks:
+            state.evidence_gaps.append("missing_targeted_sql_blocks:" + ",".join(missing_blocks))
+        if missing_sources:
+            state.evidence_gaps.append("missing_sources:" + ",".join(missing_sources))
+
+        state.reflection = {
+            "cycle": state.cycle,
+            "successful_tools": [r.tool_name for r in state.tool_results if r.success],
+            "failed_tools": [
+                {"tool": r.tool_name, "error": r.error}
+                for r in state.tool_results
+                if not r.success
+            ],
+            "overall_confidence": overall_conf,
+            "confidence_details": conf_details,
+            "structured_blocks": structured_blocks,
+            "missing_targeted_sql_blocks": missing_blocks,
+            "missing_sources": missing_sources,
+            "conflicts": conflicts,
+            "evidence_gaps": list(state.evidence_gaps),
+        }
+
         # 判断是否足够
         # 标准：
         # 1. 至少有 2 个工具成功
         # 2. 置信度 >= 0.6
         # 3. 没有高严重性冲突
-        
+        # 4. targeted_sql_pack 的关键结构化 block 不缺失
         has_high_conflict = any(c.get("severity") == "high" for c in conflicts)
         
-        if success_count >= 2 and overall_conf >= 0.6 and not has_high_conflict:
+        if success_count >= 2 and overall_conf >= 0.6 and not has_high_conflict and not missing_blocks:
             state.is_complete = True
             state.should_stop = True
             state.stop_reason = "Sufficient evidence collected"
@@ -446,6 +514,31 @@ class StrategyOrchestrator:
         """
         Re-plan 阶段：调整计划
         """
+        replan_steps: List[str] = []
+
+        missing_blocks = self._missing_targeted_sql_blocks(task, state)
+        if missing_blocks:
+            replan_steps.append("targeted-sql-pack:fill_missing_blocks")
+
+        missing_sources = self._missing_evidence_sources(task, state)
+        if "rag" in missing_sources:
+            replan_steps.append("rag:fill_document_gap")
+        if "web-search" in missing_sources:
+            replan_steps.append("web-search:fill_external_gap")
+
+        if replan_steps:
+            state.replan_queue = self._dedupe_replan_steps(replan_steps, state, allow_failed_retry=True)
+            state.replan_history.append(
+                {
+                    "cycle": state.cycle,
+                    "reason": "evidence_gaps",
+                    "gaps": list(state.evidence_gaps),
+                    "next_plan": list(state.replan_queue),
+                }
+            )
+            logger.info(f"Re-plan for evidence gaps: {state.replan_queue}")
+            return
+
         # 如果有失败的步骤，尝试回退
         failed_results = [r for r in state.tool_results if not r.success]
         
@@ -475,6 +568,18 @@ class StrategyOrchestrator:
             
             # 否则记录回退动作
             logger.info(f"Fallback action: {fallback.action_type}")
+            fallback_step = self._fallback_step_for_tool(last_failure.tool_name)
+            if fallback_step:
+                state.replan_queue = self._dedupe_replan_steps([fallback_step], state, allow_failed_retry=True)
+                state.replan_history.append(
+                    {
+                        "cycle": state.cycle,
+                        "reason": "tool_failure",
+                        "failed_tool": last_failure.tool_name,
+                        "fallback_action": fallback.action_type,
+                        "next_plan": list(state.replan_queue),
+                    }
+                )
     
     def _check_stop_conditions(
         self,
@@ -482,11 +587,6 @@ class StrategyOrchestrator:
         state: ReactState
     ) -> bool:
         """检查停止条件"""
-        # 循环次数用完
-        if state.cycle >= task.max_react_cycles:
-            state.stop_reason = "Max cycles reached"
-            return True
-        
         # 证据已足够
         if state.is_complete:
             state.stop_reason = "Evidence sufficient"
@@ -504,9 +604,82 @@ class StrategyOrchestrator:
         """判断当前计划里是否还有未执行的结构化数据步骤。"""
         completed = set(state.completed_steps)
         return any(
-            step not in completed and "nl2sql" in step
+            step not in completed and ("nl2sql" in step or "targeted-sql-pack" in step)
             for step in state.current_plan
         )
+
+    def _step_succeeded(self, state: ReactState, step: str) -> bool:
+        tool_name = step.split(":", 1)[0]
+        return any(r.tool_name == tool_name and r.success for r in state.tool_results)
+
+    def _structured_blocks_seen(self, state: ReactState) -> List[str]:
+        blocks = []
+        for result in state.tool_results:
+            if result.tool_name != "targeted-sql-pack" or not isinstance(result.result, dict):
+                continue
+            for block in result.result.get("blocks", []) or []:
+                name = block.get("name")
+                if name and name not in blocks:
+                    blocks.append(name)
+        return blocks
+
+    def _latest_targeted_sql_result(self, state: ReactState) -> Optional[Dict[str, Any]]:
+        for result in reversed(state.tool_results):
+            if result.tool_name == "targeted-sql-pack" and isinstance(result.result, dict):
+                return result.result
+        return None
+
+    def _missing_targeted_sql_blocks(self, task: OrchestrationTask, state: ReactState) -> List[str]:
+        plan = state.analysis_plan or build_analysis_plan(task)
+        target_brand = plan.target_brand if plan else None
+        latest = self._latest_targeted_sql_result(state)
+        if latest is None:
+            return list(REQUIRED_TARGETED_SQL_BLOCKS if target_brand else REQUIRED_TARGETED_SQL_BLOCKS[:4])
+        return missing_required_blocks(latest, target_brand=target_brand)
+
+    def _missing_evidence_sources(self, task: OrchestrationTask, state: ReactState) -> List[str]:
+        sources = {
+            evidence.source
+            for evidence in self.evidence_ledger.evidences.values()
+        }
+        missing = []
+        if "rag" not in sources and task.task_type != TaskType.SIMPLE_QUERY:
+            missing.append("rag")
+        overall_conf, _ = self.evidence_ledger.calculate_overall_confidence()
+        needs_external = task.task_type in {
+            TaskType.OPPORTUNITY_ASSESSMENT,
+            TaskType.COMPREHENSIVE_RESEARCH,
+            TaskType.COMPETITOR_ANALYSIS,
+        }
+        if needs_external and overall_conf < 0.70 and "web-search" not in sources:
+            missing.append("web-search")
+        return missing
+
+    def _dedupe_replan_steps(
+        self,
+        steps: List[str],
+        state: ReactState,
+        allow_failed_retry: bool = False,
+    ) -> List[str]:
+        deduped = []
+        for step in steps:
+            if step in deduped:
+                continue
+            if not allow_failed_retry and self._step_succeeded(state, step):
+                continue
+            deduped.append(step)
+        return deduped
+
+    def _fallback_step_for_tool(self, tool_name: str) -> Optional[str]:
+        if tool_name == "targeted-sql-pack":
+            return "nl2sql-pg:get_basic_data"
+        if tool_name == "nl2sql-pg":
+            return "targeted-sql-pack:core_market_metrics"
+        if tool_name == "rag":
+            return "web-search:fill_document_gap"
+        if tool_name == "web-search":
+            return None
+        return None
     
     def _check_missing_critical_evidence(
         self,
@@ -516,7 +689,10 @@ class StrategyOrchestrator:
         """检查缺失的关键证据"""
         # 如果用户问题涉及具体品牌/车型但没有结构化数据
         entities = task.user_intent.entities if task.user_intent else []
-        has_structured = any("nl2sql" in r.tool_name and r.success for r in state.tool_results)
+        has_structured = any(
+            ("nl2sql" in r.tool_name or r.tool_name == "targeted-sql-pack") and r.success
+            for r in state.tool_results
+        )
         
         if entities and not has_structured:
             return "Brand/model data required but not available"
@@ -547,6 +723,7 @@ class StrategyOrchestrator:
                 "confidence": evidence.confidence,
                 "time_range": evidence.time_range,
                 "data_caliber": evidence.data_caliber,
+                "source_grade": evidence.source_grade,
             }
             if evidence.source in ["nl2sql-pg", "rag"]:
                 facts.append({
@@ -611,12 +788,15 @@ class StrategyOrchestrator:
                     "data_caliber": e.data_caliber,
                     "source_url": e.source_url,
                     "source_date": e.source_date,
+                    "source_grade": e.source_grade,
                     "confidence": e.confidence,
                 }
                 for e in self.evidence_ledger.evidences.values()
             ],
             evidence_ledger=report,
             evidence_store=evidence_store,
+            reflection=state.reflection,
+            replan_history=state.replan_history,
             missing_or_uncertain=missing_or_uncertain,
             next_steps=self._generate_next_steps(task, state),
             errors=[r.error for r in state.tool_results if not r.success and r.error],
@@ -655,6 +835,32 @@ class StrategyOrchestrator:
     
     # ===== 工具实现 =====
     
+    def _tool_targeted_sql_pack(self, param: str, task: OrchestrationTask, state: ReactState) -> Dict:
+        """Run the orchestrator-owned targeted SQL pack."""
+        analysis_plan = state.analysis_plan or build_analysis_plan(task)
+        try:
+            data = self._run_targeted_sql_pack(analysis_plan)
+            return {
+                **data,
+                "evidences": build_targeted_sql_evidences(data, analysis_plan),
+            }
+        except Exception as exc:
+            logger.error(f"targeted_sql_pack failed: {exc}")
+            failed = {
+                "success": False,
+                "error": str(exc),
+                "query_mode": "targeted_sql_pack",
+                "blocks": [],
+                "results": [],
+            }
+            return {
+                **failed,
+                "evidences": build_targeted_sql_evidences(failed, analysis_plan),
+            }
+
+    def _run_targeted_sql_pack(self, analysis_plan: AnalysisPlan) -> Dict[str, Any]:
+        return run_targeted_sql_pack(analysis_plan)
+
     def _tool_nl2sql(self, param: str, task: OrchestrationTask, state: ReactState) -> Dict:
         """结构化数据查询工具"""
         try:
@@ -965,6 +1171,7 @@ class StrategyOrchestrator:
                 "data_caliber": evidence.get("data_caliber"),
                 "source_url": evidence.get("source_url"),
                 "source_date": evidence.get("source_date"),
+                "source_grade": evidence.get("source_grade"),
                 "confidence": evidence.get("confidence"),
                 "coverage_score": evidence.get("coverage_score"),
                 "adoption_status": "accepted",
@@ -1089,6 +1296,7 @@ class StrategyOrchestrator:
                     data_caliber="Tavily 外部网页检索口径；按实体匹配和来源等级过滤",
                     source_url=item.get("url", ""),
                     source_date=item.get("source_date", ""),
+                    source_grade=grade,
                     source_credibility=credibility,
                     coverage_dimensions=["外部补证", "URL", "来源日期", "来源等级", "剔除原因"],
                     coverage_score=coverage_score,

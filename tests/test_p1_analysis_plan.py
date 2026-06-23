@@ -17,6 +17,7 @@ from evidence.evidence_ledger import Evidence  # noqa: E402
 from executors.orchestrator import StrategyOrchestrator  # noqa: E402
 from planning.analysis_plan import build_analysis_plan  # noqa: E402
 from protocols.task_protocol import create_task_from_user_query  # noqa: E402
+from tools.targeted_sql_pack import build_targeted_sql_evidences  # noqa: E402
 
 
 class P1AnalysisPlanTest(unittest.TestCase):
@@ -64,6 +65,26 @@ class P1AnalysisPlanTest(unittest.TestCase):
                     confidence=0.86,
                 )
             }
+
+        def fake_targeted_sql_pack(param, task, state):
+            assert_plan(task, state)
+            result = {
+                "success": True,
+                "query_mode": "targeted_sql_pack",
+                "period_start": 202509,
+                "period_end": 202602,
+                "blocks": [
+                    {"name": "market_overview", "purpose": "TAM/SAM market base", "row_count": 1, "rows": [{"total_sales": 100000, "brand_count": 8, "model_count": 20}]},
+                    {"name": "monthly_trend", "purpose": "monthly trend", "row_count": 2, "rows": [{"month": 202601, "sales": 9000}, {"month": 202602, "sales": 11000, "mom_pct": 22.2}]},
+                    {"name": "yoy_change", "purpose": "year-on-year comparison", "row_count": 2, "rows": [{"period": "current", "sales": 20000, "yoy_pct": 30.0}, {"period": "previous_year", "sales": 15384}]},
+                    {"name": "competitor_share", "purpose": "competitor share", "row_count": 2, "rows": [{"brand": "小米", "sales": 20000, "share_pct": 20.0}, {"brand": "比亚迪", "sales": 30000, "share_pct": 30.0}]},
+                    {"name": "target_brand_performance", "purpose": "target brand SOM", "row_count": 1, "rows": [{"brand": "小米", "sales": 20000, "model_count": 3}]},
+                    {"name": "model_contribution", "purpose": "model contribution", "row_count": 2, "rows": [{"model": "小米SU7", "sales": 14000}, {"model": "小米YU7", "sales": 6000}]},
+                    {"name": "power_mix", "purpose": "powertrain mix", "row_count": 1, "rows": [{"power_type": "纯电动", "sales": 20000}]},
+                    {"name": "price_and_config", "purpose": "price band and config", "row_count": 1, "rows": [{"model": "小米SU7", "price_band": "20-30万"}]},
+                ],
+            }
+            return {**result, "evidences": build_targeted_sql_evidences(result, state.analysis_plan)}
 
         def fake_rag(param, task, state):
             assert_plan(task, state)
@@ -122,6 +143,7 @@ class P1AnalysisPlanTest(unittest.TestCase):
                 )
             }
 
+        orchestrator.register_tool("targeted-sql-pack", fake_targeted_sql_pack)
         orchestrator.register_tool("nl2sql-pg", fake_nl2sql)
         orchestrator.register_tool("rag", fake_rag)
         orchestrator.register_tool("web-search", fake_web)
@@ -137,12 +159,67 @@ class P1AnalysisPlanTest(unittest.TestCase):
         self.assertGreaterEqual(len(seen), 3)
         self.assertEqual(result["analysis_plan"]["target_brand"], "小米")
         self.assertEqual(result["analysis_plan"]["time_range"], "最近6个月")
-        self.assertEqual(result["evidence_store"]["summary"]["structured"], 1)
+        self.assertGreaterEqual(result["evidence_store"]["summary"]["structured"], 8)
         self.assertEqual(result["evidence_store"]["summary"]["rag"], 1)
         self.assertEqual(result["evidence_store"]["summary"]["web"], 1)
         self.assertEqual(result["evidence_store"]["D"][0]["id"], "D1")
         self.assertEqual(result["evidence_store"]["R"][0]["id"], "R1")
         self.assertEqual(result["evidence_store"]["W"][0]["id"], "W1")
+        targeted_claims = [item["claim"] for item in result["evidence_store"]["D"]]
+        self.assertTrue(any("monthly_trend" in claim for claim in targeted_claims))
+        self.assertTrue(any("yoy_change" in claim for claim in targeted_claims))
+        self.assertTrue(any("model_contribution" in claim for claim in targeted_claims))
+        self.assertTrue(any("price_and_config" in claim for claim in targeted_claims))
+
+    def test_reflection_replans_when_targeted_sql_blocks_are_missing(self) -> None:
+        orchestrator = StrategyOrchestrator()
+        calls = {"targeted": 0}
+
+        def fake_targeted_sql_pack(param, task, state):
+            calls["targeted"] += 1
+            complete_blocks = [
+                {"name": "market_overview", "purpose": "TAM/SAM market base", "row_count": 1, "rows": [{"total_sales": 100000}]},
+                {"name": "monthly_trend", "purpose": "monthly trend", "row_count": 2, "rows": [{"month": 202601, "sales": 9000}, {"month": 202602, "sales": 11000}]},
+                {"name": "yoy_change", "purpose": "year-on-year comparison", "row_count": 2, "rows": [{"period": "current", "sales": 20000}, {"period": "previous_year", "sales": 15000}]},
+                {"name": "competitor_share", "purpose": "competitor share", "row_count": 2, "rows": [{"brand": "小米", "sales": 20000}, {"brand": "比亚迪", "sales": 30000}]},
+                {"name": "target_brand_performance", "purpose": "target brand SOM", "row_count": 1, "rows": [{"brand": "小米", "sales": 20000}]},
+                {"name": "model_contribution", "purpose": "model contribution", "row_count": 1, "rows": [{"model": "小米SU7", "sales": 20000}]},
+                {"name": "power_mix", "purpose": "powertrain mix", "row_count": 1, "rows": [{"power_type": "纯电动", "sales": 20000}]},
+                {"name": "price_and_config", "purpose": "price band and config", "row_count": 1, "rows": [{"model": "小米SU7", "price_band": "20-30万"}]},
+            ]
+            blocks = complete_blocks[:4] if calls["targeted"] == 1 else complete_blocks
+            result = {
+                "success": True,
+                "query_mode": "targeted_sql_pack",
+                "period_start": 202509,
+                "period_end": 202602,
+                "blocks": blocks,
+            }
+            return {**result, "evidences": build_targeted_sql_evidences(result, state.analysis_plan)}
+
+        def fake_nl2sql(param, task, state):
+            return {"evidence": Evidence(
+                source="nl2sql-pg", tool="fake_market_db", claim="ad hoc SQL",
+                content="小米销量 20000", time_range=state.analysis_plan.time_range,
+                data_caliber="fake DB", metrics=["销量"],
+                coverage_dimensions=["时间范围", "口径"], coverage_score=0.75,
+                source_credibility=0.88, confidence=0.8)}
+
+        orchestrator.register_tool("targeted-sql-pack", fake_targeted_sql_pack)
+        orchestrator.register_tool("nl2sql-pg", fake_nl2sql)
+        task = create_task_from_user_query(
+            "小米最近半年销量数据",
+            time_range="最近6个月",
+            entities=["小米"],
+        )
+        task.max_react_cycles = 2
+        result = orchestrator.execute(task).to_dict()
+
+        self.assertEqual(calls["targeted"], 2)
+        self.assertEqual(result["cycles_used"], 2)
+        self.assertTrue(result["replan_history"])
+        self.assertIn("model_contribution", result["reflection"]["structured_blocks"])
+        self.assertEqual(result["reflection"]["missing_targeted_sql_blocks"], [])
 
 
 if __name__ == "__main__":

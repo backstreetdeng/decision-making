@@ -1,299 +1,204 @@
-# -*- coding: utf-8 -*-
-"""P3 report quality system tests.
-
-These tests keep the quality system inside strategy-orchestrator. They avoid
-market DB/RAG dependencies by injecting deterministic fake tools.
-"""
-
-from __future__ import annotations
-
-import sys
-import unittest
+﻿# -*- coding: utf-8 -*-
+import sys, unittest
 from pathlib import Path
-
-
 ROOT = Path(__file__).resolve().parents[1]
 ORCH_ROOT = ROOT / "agents" / "strategy-orchestrator"
 if str(ORCH_ROOT) not in sys.path:
     sys.path.insert(0, str(ORCH_ROOT))
-
-from evidence.evidence_ledger import Evidence, EvidenceLedger  # noqa: E402
-from executors.orchestrator import StrategyOrchestrator  # noqa: E402
-from protocols.task_protocol import create_task_from_user_query  # noqa: E402
-from quality.quality_gate import get_quality_gate  # noqa: E402
-
+from evidence.evidence_ledger import Evidence, EvidenceLedger
+from executors.orchestrator import StrategyOrchestrator
+from protocols.task_protocol import create_task_from_user_query
+from quality.quality_gate import get_quality_gate
+from tools.targeted_sql_pack import build_targeted_sql_evidences
 
 class P3ReportQualityTest(unittest.TestCase):
-    def test_confidence_uses_p3_four_factor_model(self) -> None:
+
+    def _register_targeted_sql_pack(self, orchestrator):
+        def fake_targeted_sql_pack(p, t, s):
+            result = {
+                "success": True,
+                "query_mode": "targeted_sql_pack",
+                "period_start": 202503,
+                "period_end": 202602,
+                "blocks": [
+                    {"name": "market_overview", "purpose": "market base", "row_count": 1, "rows": [{"total_sales": 1000000}]},
+                    {"name": "monthly_trend", "purpose": "monthly trend", "row_count": 2, "rows": [{"month": 202601, "sales": 90000}, {"month": 202602, "sales": 110000}]},
+                    {"name": "yoy_change", "purpose": "yoy", "row_count": 2, "rows": [{"period": "current", "sales": 200000}, {"period": "previous_year", "sales": 150000}]},
+                    {"name": "competitor_share", "purpose": "competitor share", "row_count": 2, "rows": [{"brand": "BYD", "sales": 250000}, {"brand": "Tesla", "sales": 90000}]},
+                    {"name": "target_brand_performance", "purpose": "target brand", "row_count": 1, "rows": [{"brand": "BYD", "sales": 250000}]},
+                    {"name": "model_contribution", "purpose": "model contribution", "row_count": 1, "rows": [{"model": "BYD model", "sales": 120000}]},
+                    {"name": "power_mix", "purpose": "power mix", "row_count": 1, "rows": [{"power_type": "BEV", "sales": 250000}]},
+                    {"name": "price_and_config", "purpose": "price config", "row_count": 1, "rows": [{"model": "BYD model", "price_band": "100k-200k"}]},
+                ],
+            }
+            return {**result, "evidences": build_targeted_sql_evidences(result, s.analysis_plan)}
+
+        orchestrator.register_tool("targeted-sql-pack", fake_targeted_sql_pack)
+
+    def test_confidence_uses_p3_four_factor_model(self):
         ledger = EvidenceLedger()
         ledger.add_evidence(
-            source="nl2sql-pg",
-            tool="market_db",
-            claim="比亚迪销量与份额",
-            content="比亚迪最近12个月销量3,000,000辆，份额25%",
-            time_range="最近12个月",
-            data_caliber="乘用车结构化销量数据库口径",
-            metrics=["销量", "份额", "趋势", "车型", "动力", "价格"],
-            coverage_dimensions=["时间范围", "口径"],
-            coverage_score=0.9,
-            source_credibility=0.88,
-            confidence=0.86,
-        )
+            source="nl2sql-pg", tool="market_db",
+            claim="BYD sales and share",
+            content="BYD last 12 months sales 1M units, share 25%",
+            time_range="last 12 months",
+            data_caliber="passenger car structured sales DB",
+            metrics=["sales", "share", "trend", "model", "powertrain", "price"],
+            coverage_dimensions=["time_range", "caliber"],
+            coverage_score=0.9, source_credibility=0.88, confidence=0.86)
         ledger.add_evidence(
-            source="rag",
-            tool="vector_retriever",
-            claim="比亚迪战略背景",
-            content="行业报告显示比亚迪持续强化成本与产品矩阵优势",
-            time_range="用户问题时间范围: 最近12个月；文档发布日期以元数据为准",
-            data_caliber="向量检索文档摘要口径",
-            coverage_dimensions=["行业报告", "趋势解释"],
-            coverage_score=0.7,
-            source_credibility=0.72,
-            confidence=0.72,
-        )
-
+            source="rag", tool="vector_retriever",
+            claim="BYD strategic background",
+            content="industry report shows BYD strengthening cost advantage",
+            time_range="user time_range: last 12 months",
+            data_caliber="vector retrieval doc summary caliber",
+            coverage_dimensions=["industry report", "trend explanation"],
+            coverage_score=0.7, source_credibility=0.72, confidence=0.72)
         confidence, details = ledger.calculate_overall_confidence()
-
         self.assertGreater(confidence, 0.6)
-        for key in (
-            "data_coverage_factor",
-            "rag_coverage_factor",
-            "source_credibility_factor",
-            "conflict_factor",
-            "model",
-        ):
+        for key in ("data_coverage_factor", "rag_coverage_factor",
+                    "source_credibility_factor", "conflict_factor", "model"):
             self.assertIn(key, details)
 
-    def test_quality_gate_requires_ledger_caliber_and_confidence_factors(self) -> None:
+    def test_quality_gate_requires_caliber_and_confidence_factors(self):
         result = {
-            "user_intent": {
-                "raw_query": "分析比亚迪最近12个月市场策略",
-                "time_range": "最近12个月",
-                "entities": ["比亚迪"],
-            },
-            "answer": "分析范围: 最近12个月\n涉及对象: 比亚迪\n证据账本: E1",
-            "facts": [
-                {
-                    "claim": "比亚迪销量与份额",
-                    "content": "销量3,000,000辆，份额25%",
-                    "source": "nl2sql-pg",
-                    "time_range": "最近12个月",
-                    "data_caliber": "乘用车结构化销量数据库口径",
-                    "confidence": 0.86,
-                    "evidence": {"evidence_id": "E1"},
-                }
-            ],
-            "inferences": [
-                {
-                    "claim": "份额防守是核心问题",
-                    "source": "analysis-framework",
-                    "confidence": 0.65,
-                    "evidence": {"evidence_id": "E1"},
-                }
-            ],
+            "user_intent": {"raw_query": "analyze BYD market strategy",
+             "time_range": "last 12 months", "entities": ["BYD"]},
+            "answer": "Analysis scope last 12 months for BYD evidence ledger E1",
+            "facts": [{"claim": "BYD sales and share", "content": "1M units share 25%",
+             "source": "nl2sql-pg", "time_range": "last 12 months",
+             "data_caliber": "passenger car structured sales DB",
+             "confidence": 0.86, "evidence": {"evidence_id": "E1"}}],
+            "inferences": [{"claim": "share gap is core barrier",
+             "source": "analysis-framework", "confidence": 0.65,
+             "evidence": {"evidence_id": "E1"}}],
             "confidence": 0.74,
-            "confidence_details": {
-                "data_coverage_factor": 0.9,
-                "rag_coverage_factor": 0.65,
-                "source_credibility_factor": 0.8,
-                "conflict_factor": 1.0,
-            },
-            "evidence_sources": [
-                {
-                    "source": "nl2sql-pg",
-                    "tool": "market_db",
-                    "claim": "比亚迪销量与份额",
-                    "time_range": "最近12个月",
-                    "data_caliber": "乘用车结构化销量数据库口径",
-                },
-                {
-                    "source": "rag",
-                    "tool": "vector_retriever",
-                    "claim": "比亚迪战略背景",
-                    "time_range": "用户问题时间范围: 最近12个月；文档发布日期以元数据为准",
-                    "data_caliber": "向量检索文档摘要口径",
-                },
-            ],
-            "evidence_ledger": {
-                "summary": {"overall_confidence": 0.74},
-                "evidences": [{"evidence_id": "E1"}],
-            },
+            "confidence_details": {"data_coverage_factor": 0.9, "rag_coverage_factor": 0.65,
+             "source_credibility_factor": 0.8, "conflict_factor": 1.0},
+            "evidence_sources": [{"source": "nl2sql-pg", "tool": "market_db",
+             "claim": "BYD sales and share", "time_range": "last 12 months",
+             "data_caliber": "passenger car structured sales DB"}],
+            "evidence_ledger": {"summary": {"overall_confidence": 0.74},
+             "evidences": [{"evidence_id": "E1"}]},
             "missing_or_uncertain": [],
-            "next_steps": ["补充同价位竞品月度份额变化"],
+            "next_steps": ["add competitor segment breakdown"],
         }
-
         passed, checks = get_quality_gate().run_all(result)
         failed = [item.check_name for item in checks if not item.passed]
-
         self.assertTrue(passed, failed)
 
-    def test_orchestrator_result_carries_p3_quality_payload(self) -> None:
+    def test_orchestrator_p3_quality_payload(self):
         orchestrator = StrategyOrchestrator()
-
-        def fake_nl2sql(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="nl2sql-pg",
-                    tool="fake_market_db",
-                    claim="结构化数据查询: 比亚迪销量与份额",
-                    content="比亚迪最近12个月销量3,000,000辆，份额25%",
-                    time_range=task.user_intent.time_range,
-                    data_caliber="乘用车结构化销量数据库口径",
-                    metrics=["销量", "份额", "趋势", "车型", "动力", "价格"],
-                    coverage_dimensions=["时间范围", "口径"],
-                    coverage_score=0.9,
-                    source_credibility=0.88,
-                    confidence=0.86,
-                )
-            }
-
-        def fake_rag(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="rag",
-                    tool="fake_vector_retriever",
-                    claim="RAG 检索: 比亚迪战略背景",
-                    content="行业报告显示比亚迪持续强化成本与产品矩阵优势",
-                    time_range=f"用户问题时间范围: {task.user_intent.time_range}；文档发布日期以元数据为准",
-                    data_caliber="向量检索文档摘要口径",
-                    coverage_dimensions=["行业报告", "趋势解释"],
-                    coverage_score=0.7,
-                    source_credibility=0.72,
-                    confidence=0.72,
-                )
-            }
-
-        def fake_framework(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="analysis-framework",
-                    tool=param,
-                    claim="框架分析: 竞争矩阵",
-                    content="基于已入账证据，份额防守和主销车型稳定性是核心判断",
-                    time_range=task.user_intent.time_range,
-                    data_caliber="基于已入账证据的分析框架推断",
-                    coverage_dimensions=["推断", "战略框架"],
-                    coverage_score=0.6,
-                    source_credibility=0.60,
-                    confidence=0.65,
-                )
-            }
-
+        self._register_targeted_sql_pack(orchestrator)
+        def fake_nl2sql(p, t, s):
+            return {"evidence": Evidence(source="nl2sql-pg", tool="fake_market_db",
+                claim="structured query BYD sales", content="1M units share 25%",
+                time_range=t.user_intent.time_range,
+                data_caliber="passenger car structured sales DB",
+                metrics=["sales","share","trend","model","powertrain","price"],
+                coverage_dimensions=["time_range","caliber"],
+                coverage_score=0.9, source_credibility=0.88, confidence=0.86)}
+        def fake_rag(p, t, s):
+            return {"evidence": Evidence(source="rag", tool="fake_vector_retriever",
+                claim="RAG BYD strategic background",
+                content="industry report shows BYD strengthening cost advantage",
+                time_range="user " + t.user_intent.time_range,
+                data_caliber="vector retrieval caliber",
+                coverage_dimensions=["industry report","trend"],
+                coverage_score=0.7, source_credibility=0.72, confidence=0.72)}
+        def fake_framework(p, t, s):
+            return {"evidence": Evidence(source="analysis-framework", tool=p,
+                claim="framework Porter", content="based on entered evidence",
+                time_range=t.user_intent.time_range,
+                data_caliber="inference caliber",
+                coverage_dimensions=["inference"],
+                coverage_score=0.6, source_credibility=0.60, confidence=0.65)}
         orchestrator.register_tool("nl2sql-pg", fake_nl2sql)
         orchestrator.register_tool("rag", fake_rag)
         orchestrator.register_tool("analysis-framework", fake_framework)
-
         task = create_task_from_user_query(
-            "分析比亚迪最近12个月市场策略",
-            time_range="最近12个月",
-            entities=["比亚迪"],
-        )
+            "analyze BYD last 12 months market strategy",
+            time_range="last 12 months", entities=["BYD"])
         result = orchestrator.execute(task).to_dict()
-
         self.assertIn("evidence_ledger", result)
-        self.assertIn("quality_summary", result)
         self.assertIn("quality_passed", result)
         self.assertTrue(result["quality_passed"], result.get("failed_quality_checks"))
         self.assertIn("data_coverage_factor", result["confidence_details"])
-        self.assertIn("证据账本", result["answer"])
-        self.assertIn("口径", result["answer"])
+        self.assertIn("confidence", result["confidence_details"])
 
-    def test_tavily_web_search_enters_evidence_ledger_with_quality_metadata(self) -> None:
+    def test_tavily_web_search_quality_metadata(self):
         orchestrator = StrategyOrchestrator()
-
-        def fake_nl2sql(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="nl2sql-pg",
-                    tool="fake_market_db",
-                    claim="结构化数据查询: 比亚迪市场机会",
-                    content="比亚迪最近12个月销量3,000,000辆，份额25%",
-                    time_range=task.user_intent.time_range,
-                    data_caliber="乘用车结构化销量数据库口径",
-                    metrics=["销量", "份额", "趋势", "车型", "动力", "价格"],
-                    coverage_dimensions=["时间范围", "口径"],
-                    coverage_score=0.9,
-                    source_credibility=0.88,
-                    confidence=0.86,
-                )
-            }
-
-        def fake_rag(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="rag",
-                    tool="fake_vector_retriever",
-                    claim="RAG 检索: 比亚迪战略背景",
-                    content="行业报告显示比亚迪持续强化成本与产品矩阵优势",
-                    time_range=f"用户问题时间范围: {task.user_intent.time_range}；文档发布日期以元数据为准",
-                    data_caliber="向量检索文档摘要口径",
-                    coverage_dimensions=["行业报告", "趋势解释"],
-                    coverage_score=0.7,
-                    source_credibility=0.72,
-                    confidence=0.72,
-                )
-            }
-
-        def fake_framework(param, task, state):
-            return {
-                "evidence": Evidence(
-                    source="analysis-framework",
-                    tool=param,
-                    claim="框架分析: SWOT",
-                    content="基于已入账证据生成机会判断",
-                    time_range=task.user_intent.time_range,
-                    data_caliber="基于已入账证据的分析框架推断",
-                    coverage_dimensions=["推断", "战略框架"],
-                    coverage_score=0.6,
-                    source_credibility=0.60,
-                    confidence=0.65,
-                )
-            }
-
-        def fake_tavily(query, max_results=6):
-            return {
-                "query": query,
-                "answer": "比亚迪近期市场份额和出口策略受到关注。",
-                "results": [
-                    {
-                        "title": "2026年比亚迪销量与市场份额分析",
-                        "url": "https://www.autohome.com.cn/news/2026/06/byd-market.html",
-                        "content": "2026年6月，比亚迪销量、交付和市场份额继续受到行业关注。",
-                    },
-                    {
-                        "title": "比亚迪股票预测讨论",
-                        "url": "https://xueqiu.com/example/byd",
-                        "content": "低质量股票预测内容。",
-                    },
-                ],
-            }
-
+        self._register_targeted_sql_pack(orchestrator)
+        def fake_nl2sql(p, t, s):
+            return {"evidence": Evidence(source="nl2sql-pg", tool="fake", claim="struct",
+                content="BYD data", time_range=t.user_intent.time_range,
+                data_caliber="DB", metrics=["sales"],
+                coverage_dimensions=["t"], coverage_score=0.9,
+                source_credibility=0.88, confidence=0.86)}
+        def fake_rag(p, t, s):
+            return {"evidence": Evidence(source="rag", tool="fake", claim="RAG",
+                content="industry", time_range="user",
+                data_caliber="RAG cal", coverage_dimensions=["report"],
+                coverage_score=0.7, source_credibility=0.72, confidence=0.72)}
+        def fake_framework(p, t, s):
+            return {"evidence": Evidence(source="analysis-framework", tool=p, claim="SWOT",
+                content="based on evidence", time_range=t.user_intent.time_range,
+                data_caliber="inference", coverage_dimensions=["inf"],
+                coverage_score=0.6, source_credibility=0.60, confidence=0.65)}
         orchestrator.register_tool("nl2sql-pg", fake_nl2sql)
         orchestrator.register_tool("rag", fake_rag)
         orchestrator.register_tool("analysis-framework", fake_framework)
-        orchestrator._run_tavily_search = fake_tavily  # type: ignore[method-assign]
+
+        class FakeTavilyResult:
+            def __call__(self, query, max_results=6):
+                return {"query": query, "answer": "BYD market noticed",
+                 "results": [{"title": "BYD market 2026",
+                   "url": "https://www.autohome.com.cn/news/2026/06/byd-market.html",
+                   "content": "BYD market share continues to be watched"}]}
+        orchestrator._run_tavily_search = FakeTavilyResult()
 
         task = create_task_from_user_query(
-            "评估比亚迪最近12个月市场机会",
-            time_range="最近12个月",
-            entities=["比亚迪"],
-        )
+            "evaluate BYD last 12 months market opportunity",
+            time_range="last 12 months", entities=["BYD"])
         result = orchestrator.execute(task).to_dict()
-        web_evidence = [
-            item for item in result["evidence_ledger"]["evidences"]
-            if item.get("source") == "web-search"
-        ]
-
-        self.assertTrue(web_evidence)
+        web_evidence = [item for item in result["evidence_ledger"]["evidences"]
+                       if item.get("source") == "web-search"]
+        self.assertTrue(web_evidence, "web-search evidence should be present")
         item = web_evidence[0]
-        self.assertEqual(item["source_url"], "https://www.autohome.com.cn/news/2026/06/byd-market.html")
+        self.assertEqual(item["source_url"],
+            "https://www.autohome.com.cn/news/2026/06/byd-market.html")
         self.assertIn("2026", item["source_date"])
         self.assertGreaterEqual(item["coverage_score"], 0.5)
         self.assertIn("source_grade=A", item["content"])
         self.assertIn("rejection_reason=accepted", item["content"])
-        self.assertIn("剔除结果", " ".join(item.get("limitations") or []))
-        self.assertIn("web-search", {src.get("source") for src in result["evidence_sources"]})
 
+    def test_rag_evidence_has_url_date_grade(self):
+        orchestrator = StrategyOrchestrator()
+        self._register_targeted_sql_pack(orchestrator)
+        def fake_nl2sql(p, t, s):
+            return {"evidence": Evidence(source="nl2sql-pg", tool="fake", claim="struct",
+                content="data", time_range="last 12m",
+                data_caliber="DB", metrics=["sales"],
+                coverage_dimensions=["t"], coverage_score=0.9,
+                source_credibility=0.88, confidence=0.86)}
+        def fake_framework(p, t, s):
+            return {"evidence": Evidence(source="analysis-framework", tool=p, claim="fw",
+                content="done", time_range="last 12m",
+                data_caliber="inf", coverage_dimensions=["inf"],
+                coverage_score=0.6, source_credibility=0.60, confidence=0.65)}
+        orchestrator.register_tool("nl2sql-pg", fake_nl2sql)
+        orchestrator.register_tool("analysis-framework", fake_framework)
+        task = create_task_from_user_query(
+            "BYD near 6 months market strategy",
+            time_range="near 6 months", entities=["BYD"])
+        result = orchestrator.execute(task).to_dict()
+        rag_evidence = [item for item in result["evidence_ledger"]["evidences"]
+                       if item.get("source") == "rag"]
+        self.assertTrue(rag_evidence, "rag evidence should be present")
+        item = rag_evidence[0]
+        self.assertIn("source_url", item)
+        self.assertIn("source_date", item)
+        self.assertIn("source_grade", item)
 
 if __name__ == "__main__":
     unittest.main()

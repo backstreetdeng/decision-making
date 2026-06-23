@@ -52,6 +52,7 @@ class Evidence:
         data_caliber: 数据口径/统计口径
         source_url: 外部来源 URL（如有）
         source_date: 来源发布日期或数据发布日期（如有）
+        source_grade: 来源等级（如 high/medium/low 或 A/B/C）
         source_credibility: 来源可信度 0-1
         coverage_dimensions: 这条证据覆盖的分析维度
         coverage_score: 这条证据对问题的覆盖度 0-1
@@ -70,6 +71,7 @@ class Evidence:
     data_caliber: str = "unknown"
     source_url: str = ""
     source_date: str = ""
+    source_grade: str = ""
     source_credibility: Optional[float] = None
     coverage_dimensions: List[str] = field(default_factory=list)
     coverage_score: Optional[float] = None
@@ -137,6 +139,7 @@ class EvidenceLedger:
         data_caliber: str = "unknown",
         source_url: str = "",
         source_date: str = "",
+        source_grade: str = "",
         source_credibility: Optional[float] = None,
         coverage_dimensions: List[str] = None,
         coverage_score: Optional[float] = None,
@@ -160,6 +163,7 @@ class EvidenceLedger:
             data_caliber=data_caliber,
             source_url=source_url,
             source_date=source_date,
+            source_grade=source_grade,
             source_credibility=source_credibility,
             coverage_dimensions=coverage_dimensions or [],
             coverage_score=coverage_score,
@@ -207,6 +211,15 @@ class EvidenceLedger:
         Returns:
             EvidenceConflict 或 None
         """
+        # targeted_sql_pack returns complementary blocks (trend, share, model,
+        # price, power). Shared metric names such as "销量" are not conflicts
+        # unless they claim the same block-level fact.
+        if a.tool == b.tool == "targeted_sql_pack" and a.claim != b.claim:
+            return None
+
+        if not self._claims_overlap(a.claim, b.claim):
+            return None
+
         # 1. 数据冲突：同一指标数据差异 > 10%
         if self._has_data_conflict(a, b):
             return EvidenceConflict(a, b, "data", "high")
@@ -220,6 +233,13 @@ class EvidenceLedger:
             return EvidenceConflict(a, b, "caliber", "medium")
         
         return None
+
+    def _claims_overlap(self, claim_a: str, claim_b: str) -> bool:
+        a = self._normalize_claim(claim_a)
+        b = self._normalize_claim(claim_b)
+        if not a or not b:
+            return False
+        return a == b or a in b or b in a
     
     def _has_data_conflict(self, a: Evidence, b: Evidence) -> bool:
         """检测数据冲突"""
@@ -336,6 +356,7 @@ class EvidenceLedger:
         medium_conflicts = len([c for c in self.conflicts if c.severity == "medium"])
         
         details = {
+            "confidence": round(overall, 3),
             "base_confidence": round(base_confidence, 3),
             "data_coverage_factor": round(data_coverage_factor, 3),
             "rag_coverage_factor": round(rag_coverage_factor, 3),

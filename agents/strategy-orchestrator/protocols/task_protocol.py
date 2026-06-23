@@ -194,6 +194,8 @@ class OrchestrationResult:
     evidence_sources: List[Dict[str, Any]] = field(default_factory=list)  # 证据来源
     evidence_ledger: Dict[str, Any] = field(default_factory=dict)  # 证据账本
     evidence_store: Dict[str, Any] = field(default_factory=dict)  # D/R/W 业务证据编号
+    reflection: Dict[str, Any] = field(default_factory=dict)  # ReAct 反思摘要
+    replan_history: List[Dict[str, Any]] = field(default_factory=list)  # 重规划记录
     quality_passed: bool = False          # 质量门禁是否通过
     quality_summary: Dict[str, Any] = field(default_factory=dict)  # 质量门禁摘要
     failed_quality_checks: List[Dict[str, Any]] = field(default_factory=list)  # 未通过项
@@ -252,17 +254,17 @@ def _classify_task_type(query: str) -> TaskType:
     """根据查询内容分类任务类型"""
     query_lower = query.lower()
     
-    if any(kw in query_lower for kw in ["趋势", "增长", "下滑", "增速", "渗透率"]):
+    if any(kw in query_lower for kw in ["趋势", "增长", "下滑", "增速", "渗透率", "trend", "growth", "decline"]):
         return TaskType.MARKET_TREND
-    elif any(kw in query_lower for kw in ["竞品", "竞争", "对比", "品牌", "车型比较"]):
+    elif any(kw in query_lower for kw in ["竞品", "竞争", "对比", "品牌", "车型比较", "competitor", "competitive", "compare", "comparison"]):
         return TaskType.COMPETITOR_ANALYSIS
-    elif any(kw in query_lower for kw in ["政策", "补贴", "法规", "标准", "关税"]):
+    elif any(kw in query_lower for kw in ["政策", "补贴", "法规", "标准", "关税", "policy", "subsidy", "regulation", "tariff"]):
         return TaskType.POLICY_IMPACT
-    elif any(kw in query_lower for kw in ["机会", "进入", "投资", "市场空间", "TAM", "SAM"]):
+    elif any(kw in query_lower for kw in ["机会", "进入", "投资", "市场空间", "tam", "sam", "opportunity", "evaluate", "assessment", "enter"]):
         return TaskType.OPPORTUNITY_ASSESSMENT
-    elif any(kw in query_lower for kw in ["分析", "研究", "报告", "综合", "全面"]):
+    elif any(kw in query_lower for kw in ["分析", "研究", "报告", "综合", "全面", "analyze", "analysis", "research", "report", "strategy"]):
         return TaskType.COMPREHENSIVE_RESEARCH
-    elif any(kw in query_lower for kw in ["多少", "排名", "数据", "销量"]):
+    elif any(kw in query_lower for kw in ["多少", "排名", "数据", "销量", "how many", "ranking", "data", "sales"]):
         return TaskType.SIMPLE_QUERY
     else:
         return TaskType.UNKNOWN

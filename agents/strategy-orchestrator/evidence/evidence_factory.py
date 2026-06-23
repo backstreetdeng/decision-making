@@ -296,24 +296,47 @@ def build_rag_evidence(
     q = calc_rag_evidence_quality(results, query, time_range, user_intent)
     
     contents = []
+    first_meta = {}
     if results:
         for r in results:
             if isinstance(r, dict):
+                if not first_meta:
+                    first_meta = r.get("metadata", {}) if isinstance(r.get("metadata", {}), dict) else {}
                 doc = r.get("document", str(r))
             else:
                 doc = str(r)
             contents.append(doc[:200])
+    source_url = str(first_meta.get("source_url") or first_meta.get("url") or first_meta.get("file_name") or "")
+    source_date = str(first_meta.get("publish_date") or first_meta.get("source_date") or "")
+    source = str(first_meta.get("source") or "")
+    source_grade = _grade_rag_source(source)
     
     return Evidence(
         source="rag",
         tool="vector_retriever",
         claim=f"RAG 检索: {query[:60]}",
-        content="; ".join(contents) if contents else "无相关文档",
+        content=(
+            f"source_url={source_url}; source_date={source_date}; source_grade={source_grade}; "
+            + ("; ".join(contents) if contents else "无相关文档")
+        ),
         time_range=f"用户问题时间范围: {time_range}；文档发布日期以元数据为准",
         data_caliber=q.data_caliber,
+        source_url=source_url,
+        source_date=source_date,
+        source_grade=source_grade,
         source_credibility=q.source_credibility,
         coverage_dimensions=q.coverage_dimensions,
         coverage_score=q.coverage_score,
         confidence=q.confidence,
         limitations=q.limitations
     )
+
+
+def _grade_rag_source(source: str) -> str:
+    high = ["乘联会", "中汽协", "国家统计局", "工信部", "发改委", "财政部", "数据中心"]
+    medium = ["汽车之家", "易车", "懂车帝", "盖世汽车", "第一财经"]
+    if any(item in source for item in high):
+        return "high"
+    if any(item in source for item in medium):
+        return "medium"
+    return "low" if source else "unknown"

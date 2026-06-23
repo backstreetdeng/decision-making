@@ -34,6 +34,7 @@ class AnalysisPlan:
     target_brand: Optional[str]
     brand_aliases: List[str]
     time_range: str
+    month_count: int
     market_scope: str
     geography: str = "中国"
     price_band: Optional[str] = None
@@ -55,6 +56,7 @@ def build_analysis_plan(task: Any) -> AnalysisPlan:
 
     brand = _infer_brand(raw_query, entities)
     time_range = _normalize_time_range(raw_query, requested_time)
+    month_count = _month_count_from_range(time_range)
     market_scope = _infer_market_scope(raw_query)
     price_band = _infer_price_band(raw_query)
     power_type = _infer_power_type(raw_query)
@@ -84,6 +86,7 @@ def build_analysis_plan(task: Any) -> AnalysisPlan:
         target_brand=brand,
         brand_aliases=aliases,
         time_range=time_range,
+        month_count=month_count,
         market_scope=market_scope,
         price_band=price_band,
         power_type=power_type,
@@ -123,6 +126,17 @@ def _normalize_time_range(query: str, requested: str) -> str:
     if requested:
         return requested
     return "最近6个月"
+
+
+def _month_count_from_range(time_range: str) -> int:
+    text = time_range or ""
+    if any(token in text for token in ["近半年", "最近半年", "6个月", "六个月"]):
+        return 6
+    if any(token in text for token in ["近三个月", "最近3个月", "3个月", "三个月"]):
+        return 3
+    if any(token in text for token in ["最近12个月", "近12个月", "12个月", "一年"]):
+        return 12
+    return 6
 
 
 def _infer_market_scope(query: str) -> str:
