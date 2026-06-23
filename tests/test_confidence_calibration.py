@@ -15,6 +15,7 @@ Case 设计原则：
 from __future__ import annotations
 
 import sys
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,8 +147,8 @@ CASES = [
     CalibrationCase(
         name="case_D_证据冲突",
         evidences=[
-            dict(source="nl2sql-pg", tool="market_db", claim="比亚迪销量A来源",
-                 content="比亚迪12个月销量300万，份额25%",
+            dict(source="nl2sql-pg", tool="market_db", claim="比亚迪销量份额",
+                 content="比亚迪12个月销量:300，份额:25",
                  time_range="最近12个月",
                  data_caliber="乘用车结构化数据库",
                  metrics=["销量", "份额"],
@@ -155,8 +156,8 @@ CASES = [
                  coverage_score=0.90,
                  source_credibility=0.88,
                  confidence=0.86),
-            dict(source="nl2sql-pg", tool="market_db", claim="比亚迪销量B来源（冲突）",
-                 content="比亚迪12个月销量280万，份额23%（另一口径）",
+            dict(source="nl2sql-pg", tool="market_db", claim="比亚迪销量份额",
+                 content="比亚迪12个月销量:240，份额:20（另一口径）",
                  time_range="最近12个月",
                  data_caliber="另一个数据库口径",
                  metrics=["销量", "份额"],
@@ -165,9 +166,9 @@ CASES = [
                  source_credibility=0.75,
                  confidence=0.80),
         ],
-        expected_min=0.45,
-        expected_max=0.65,
-        reason="两条高可信度结构化证据但存在冲突，冲突系数0.8应显著降权",
+        expected_min=0.25,
+        expected_max=0.45,
+        reason="两条高可信度结构化证据但存在同指标数值冲突，冲突系数0.5应显著降权",
     ),
 
     # case_E: 极低覆盖
@@ -191,8 +192,42 @@ CASES = [
 ]
 
 
-def test_confidence_calibration():
-    """运行黄金测试集，验证当前四因子权重是否合理。"""
+class ConfidenceCalibrationTest(unittest.TestCase):
+    """黄金测试集：确保四因子置信度模型持续符合预期区间。"""
+
+    def test_confidence_calibration_cases(self):
+        results = []
+        for case in CASES:
+            with self.subTest(case=case.name):
+                confidence, details = self._run_case(case)
+                self.assertGreaterEqual(
+                    confidence,
+                    case.expected_min,
+                    f"{case.name}: {case.reason}",
+                )
+                self.assertLessEqual(
+                    confidence,
+                    case.expected_max,
+                    f"{case.name}: {case.reason}",
+                )
+                results.append((case.name, confidence, details))
+
+    def test_conflict_case_triggers_conflict_factor(self):
+        conflict_case = next(case for case in CASES if case.name == "case_D_证据冲突")
+        confidence, details = self._run_case(conflict_case)
+
+        self.assertEqual(details.get("high_conflicts"), 1)
+        self.assertLess(details.get("conflict_factor", 1.0), 1.0)
+        self.assertLess(confidence, 0.45)
+
+    def _run_case(self, case: CalibrationCase):
+        ledger = make_ledger(case.evidences)
+        confidence, details = ledger.calculate_overall_confidence()
+        return confidence, details
+
+
+def run_confidence_calibration_report():
+    """脚本模式：打印黄金测试集校准报告。"""
     print("=" * 60)
     print("四因子置信度模型 - 黄金测试集校准")
     print("当前权重: 0.30*数据覆盖 + 0.25*RAG覆盖 + 0.30*来源可信度 + 0.15*基础置信度")
@@ -204,7 +239,6 @@ def test_confidence_calibration():
     for case in CASES:
         ledger = make_ledger(case.evidences)
         confidence, details = ledger.calculate_overall_confidence()
-
         in_range = case.expected_min <= confidence <= case.expected_max
         status = "PASS" if in_range else "FAIL"
 
@@ -248,5 +282,5 @@ def test_confidence_calibration():
 
 
 if __name__ == "__main__":
-    passed, results = test_confidence_calibration()
+    passed, results = run_confidence_calibration_report()
     sys.exit(0 if passed else 1)
