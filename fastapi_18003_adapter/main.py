@@ -148,7 +148,7 @@ def _normalize_task_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return event
 
 
-def _complete_payload(req: ChatRequest, gateway_result: Dict[str, Any], started_at: float) -> Dict[str, Any]:
+async def _complete_payload(req: ChatRequest, gateway_result: Dict[str, Any], started_at: float, session_id: str = "") -> Dict[str, Any]:
     # Try to extract confidence from various possible locations
     confidence = (
         gateway_result.get("confidence")
@@ -167,6 +167,11 @@ def _complete_payload(req: ChatRequest, gateway_result: Dict[str, Any], started_
         or ""
     )
     text = str(report)
+    if _looks_like_metadata_only_report(text) and session_id:
+        aggregated = await _aggregate_report_from_callbacks(session_id)
+        if aggregated and len(aggregated) > len(text):
+            text = aggregated
+            report = aggregated
     return {
         "success": bool(gateway_result.get("ok")),
         "question": req.question,
@@ -185,6 +190,69 @@ def _complete_payload(req: ChatRequest, gateway_result: Dict[str, Any], started_
             "session_id": req.session_id,
         },
     }
+
+
+def _looks_like_metadata_only_report(text: str) -> bool:
+    """Heuristic: detect when the gateway reply text is metadata-only.
+
+    The market_strategy agent sometimes replies with a short summary
+    (e.g. `confidence=0.85, quality_passed=true`) instead of embedding the
+    full Markdown report from strategy-orchestrator. When that happens,
+    chat.html shows "\u672a\u8fd4\u56de\u62a5\u544a\u5185\u5bb9" because the report
+    field is empty.
+
+    A real Markdown report is usually hundreds of lines, contains headers,
+    lists, and structured analysis. A metadata-only reply is short and
+    lacks Markdown structure.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if len(stripped) < 600:
+        return True
+    if stripped.startswith(chr(96)) and stripped.endswith(chr(96)) and len(stripped) < 1200:
+        return True
+    has_markdown_header = any(
+        line.lstrip().startswith("#") for line in stripped.splitlines()[:40]
+    )
+    if not has_markdown_header:
+        return True
+    return False
+
+
+async def _aggregate_report_from_callbacks(session_id: str, min_length: int = 200) -> str:
+    """Scan session events for the longest report/answer/markdown field.
+
+    This is a defensive fallback. The primary path is that the
+    market_strategy agent embeds the full Markdown report in its gateway
+    reply. If it does not, we still want chat.html to render the
+    strategy-orchestrator's full report, which is normally delivered as a
+    `phase=Complete` callback.
+    """
+    if not session_id:
+        return ""
+    try:
+        history = await session_manager.history(session_id, after_seq=0)
+    except Exception:
+        return ""
+    candidates = []
+    seen = set()
+    for item in history.get("events", []) or []:
+        data = item.get("data") or {}
+        for key in ("report", "answer", "markdown"):
+            value = data.get(key)
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if len(value) < min_length:
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            candidates.append(value)
+    if not candidates:
+        return ""
+    return max(candidates, key=len)
 
 
 def build_market_agent_message(req: ChatRequest) -> str:
@@ -273,7 +341,7 @@ async def _run_gateway_turn(req: ChatRequest) -> None:
         await session_manager.push(
             req.session_id,
             "complete",
-            _complete_payload(req, result, started_at),
+            await _complete_payload(req, result, started_at, session_id=req.session_id),
         )
     elif _is_gateway_watch_error(result):
         await session_manager.push(

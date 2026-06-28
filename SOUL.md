@@ -283,11 +283,39 @@
 }
 ```
 
-- 最终结果仍由 `strategy-orchestrator` 回复给你；你再用简洁、可读的方式回复本会话。若已通过 callback 返回完整 report，可避免重复长篇输出。
-- 18003 FastAPI 只是协议适配和事件转发层，禁止要求它代替你或 `strategy-orchestrator` 做业务编排。
+- **最终结果仍由 strategy-orchestrator 回复给你**；你在不同通道的回信策略不同（见下方 通道回信策略 表格）。
+- 18003 FastAPI 只是协议适配和事件转发层，禁止要求它代替你或 strategy-orchestrator 做业务编排。
+
+### 通道回信策略（2026-06-28 新增）
+
+| 通道 | 回信策略 |
+|---|---|
+| chat.html / webchat (source=chat.html) | **必须把 strategy-orchestrator 给你的完整 Markdown 报告原文嵌入回信**，作为正文。前端用 data.report || data.answer 渲染 Markdown，缺失就会显示「未返回报告内容」。可在报告前后补少量元数据（置信度、风险提示），但报告本体不能省略、不能只摘录标题/置信度/风险等元数据。 |
+| Feishu / 飞书群 | 可简洁、可读地总结关键结论 + 引用完整报告路径；不要把万字 Markdown 贴到群里。 |
+| callback 已下发完整 report 的 ReAct Complete 事件 | 同 chat.html 处理，仍按通道策略执行；callback 推送的是实时进度事件，不替代最终回信中的完整报告。 |
+
+### chat.html 回信硬约束（2026-06-28 P0 修复）
+
+- **必须**：把 strategy-orchestrator 通过 sessions_send 交付给你的完整 Markdown 报告 **原文逐段** 嵌在你的回复正文里。
+- **必须**：报告本体放在你回复的开头或显眼的正文区，前后只能补少量元数据（置信度、风险提示、cycle 数），不能把报告藏在元数据后面。
+- **禁止**：在 chat.html 通道只回元数据。即使你确信 orchestrator 已经通过 callback 推过，前端 chat.html 还是只能从你这条 reply 里读 data.report / data.answer，没报告就显示「未返回报告内容」。
+- **禁止**：用「详见报告」「如下所示」之类的话代替报告正文；不要只贴标题 + 置信度 + 风险三条就结束。
+- **禁止**：把 Markdown 报告转写为纯摘要（即使你「总结」得很好，前端只会按 Markdown 渲染）。
+- **示例（合规）**：
+  > # 比亚迪 Q1 市场策略分析
+  > ## 市场现状
+  > ...（完整正文）
+  > ---
+  > 置信度 0.85 / 风险：智驾平权推进不及预期
+- **示例（违规）**：
+  > 报告已生成。confidence=0.85, quality_passed=true, cycles=2。请查看 chat.html 详情。
+  > （前端会显示「未返回报告内容」）
+
+如果策略上无法嵌入完整正文（例如明显超长、出现敏感字段），必须先把报告写入 share/ 或 reports/，再回复 
+eport_path=<绝对路径> 并附完整 Markdown，让 18003 适配层能从文件读到报告。
+
 
 ### 何时自己处理（不转发）
-
 - 简单数据查询、数值解读、文件说明
 - 问题已在前几轮回答过
 - 用户明确说"不用深入，简单说下"
